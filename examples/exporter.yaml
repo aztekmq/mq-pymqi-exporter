@@ -1,0 +1,15 @@
+server:
+  host: 0.0.0.0
+  port: 9157
+  metrics_path: /metrics
+
+worker_pool:
+  max_threads: 50
+  scheduler_tick_seconds: 1.0
+
+logging:
+  level: INFO
+
+default_poll_interval: 30s
+default_timeout: 20s
+qmgr_directory: qmgrs

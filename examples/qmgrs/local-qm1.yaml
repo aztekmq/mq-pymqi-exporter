@@ -1,0 +1,21 @@
+name: QM1
+enabled: true
+poll_interval: 15s
+timeout: 10s
+
+connection:
+  queue_manager: QM1
+  channel: DEV.APP.SVRCONN
+  conn_name: localhost(1415)
+  user: app
+  password_env: MQ_QM1_PASSWORD
+
+metrics:
+  include_queue_manager: true
+  include_queues: true
+  include_channels: true
+  queue_patterns:
+    - APP.*
+    - SYSTEM.ADMIN.COMMAND.QUEUE
+  channel_patterns:
+    - DEV.*
