@@ -33,6 +33,7 @@ class MetricsHttpServer:
         self._stop.set()
         if self._server is not None:
             self._server.shutdown()
+            self._server.server_close()
         if self._thread is not None:
             self._thread.join(timeout=5)
 

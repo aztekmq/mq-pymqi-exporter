@@ -14,6 +14,9 @@ from .runtime_state import RuntimeState
 from .scheduler import PollScheduler
 
 
+LOG = logging.getLogger(__name__)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="IBM MQ Prometheus exporter using background pyMQI polling.")
     parser.add_argument("--config", required=True, help="Path to exporter YAML file.")
@@ -35,18 +38,33 @@ def main() -> int:
     runtime_state = RuntimeState.from_config(config, config_path)
     scheduler = PollScheduler(config, collector, store, runtime_state)
     http_server = MetricsHttpServer(config.server, store.registry, runtime_state)
+    interrupt_count = 0
 
     def _stop(_signum=None, _frame=None) -> None:
-        stop_event.set()
+        nonlocal interrupt_count
+        interrupt_count += 1
+        if interrupt_count == 1:
+            LOG.info("Interrupt received, starting graceful shutdown")
+            stop_event.set()
+            return
+        LOG.warning("Second interrupt received, forcing process exit")
+        raise KeyboardInterrupt()
 
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
 
-    http_server.start()
-    scheduler.start()
-    stop_event.wait()
-    scheduler.stop()
-    http_server.stop()
+    try:
+        http_server.start()
+        scheduler.start()
+        stop_event.wait()
+    except KeyboardInterrupt:
+        LOG.warning("Forced shutdown requested")
+    finally:
+        scheduler.stop()
+        http_server.stop()
+
+    if interrupt_count > 1:
+        return 130
     return 0
 
 
