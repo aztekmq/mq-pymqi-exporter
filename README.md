@@ -289,6 +289,8 @@ Relevant files:
 - [docker_build/build_mq.sh](docker_build/build_mq.sh)
 - [docker_build/build_mq.md](docker_build/build_mq.md)
 - [docker_build/docker-compose.yml](docker_build/docker-compose.yml)
+- [docker_build/mq-monitoring/Dockerfile](docker_build/mq-monitoring/Dockerfile)
+- [docker_build/mq-monitoring/monitoring-auth.mqsc](docker_build/mq-monitoring/monitoring-auth.mqsc)
 
 ### Windows Quick Start
 Create one or more queue managers:
@@ -305,6 +307,8 @@ build_mq.bat 1
 
 ### What the Helper Does
 - checks local port availability
+- builds a local MQ image that creates OS group `monitoring` and user `app`
+- loads MQ startup authority records for monitoring subscriptions and event queues
 - recreates local MQ data directories
 - generates a Docker Compose stack
 - starts IBM MQ containers
@@ -329,6 +333,14 @@ connection:
   user: app
   password_env: MQ_QM1_PASSWORD
 ```
+
+The generated queue managers enable `ACCTQ(ON)` and `STATQ(ON)`, and grant the `monitoring` group `GET` authority on:
+- `SYSTEM.ADMIN.ACCOUNTING.QUEUE`
+- `SYSTEM.ADMIN.STATISTICS.QUEUE`
+- `SYSTEM.ADMIN.QMGR.EVENT`
+- `SYSTEM.ADMIN.PERF.EVENT`
+
+They also grant `SUB` and `RESUME` on `SYSTEM.ADMIN.TOPIC`. For queue consumption, `GET` is the consume permission; `BROWSE` would be non-destructive read only.
 
 ## Running the Exporter
 

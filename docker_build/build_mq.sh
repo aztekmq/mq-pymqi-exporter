@@ -63,7 +63,10 @@ BASE_REST_PORT=9449       # Maps to container port 9449 (Admin REST)
 # Root data directory for persistent volumes (one subdir per QM).
 DATA_DIR="./data"
 # Container image name and tag. Ensure the image is available locally/remotely.
-IMAGE_NAME="ibmcom/mq"
+IMAGE_NAME="mq-local-monitoring"
+# Docker build context for the custom image layer that provisions the
+# monitoring/app OS identities and ships the replay-safe MQSC auth config.
+DOCKERFILE_DIR="./mq-monitoring"
 # Output path for the generated Docker Compose definition.
 COMPOSE_FILE="docker-compose.yml"
  
@@ -104,6 +107,10 @@ done
  
 echo -e "${GREEN}✅ No port conflicts detected.${NC}"
  
+# --------- Custom Image Build ---------
+echo -e "${CYAN}ðŸ§± Building custom MQ image...${NC}"
+docker build -t "$IMAGE_NAME" "$DOCKERFILE_DIR"
+
 # --------- Cleanup Old Environment ---------
 # Bring down any prior Compose stack in the current directory and remove
 # the previously generated Compose file and data directory (if present).

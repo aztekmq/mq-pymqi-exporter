@@ -1,0 +1,15 @@
+* Enable the main monitoring feeds this repo cares about.
+ALTER QMGR ACCTQ(ON) STATQ(ON)
+
+* Queue-manager level inquiry and display access.
+SET AUTHREC GROUP('monitoring') OBJTYPE(QMGR) AUTHADD(CONNECT,INQ,DSP)
+
+* Consume accounting, statistics, and core event messages.
+SET AUTHREC PROFILE('SYSTEM.ADMIN.ACCOUNTING.QUEUE') OBJTYPE(QUEUE) GROUP('monitoring') AUTHADD(DSP,INQ,GET)
+SET AUTHREC PROFILE('SYSTEM.ADMIN.STATISTICS.QUEUE') OBJTYPE(QUEUE) GROUP('monitoring') AUTHADD(DSP,INQ,GET)
+SET AUTHREC PROFILE('SYSTEM.ADMIN.QMGR.EVENT') OBJTYPE(QUEUE) GROUP('monitoring') AUTHADD(DSP,INQ,GET)
+SET AUTHREC PROFILE('SYSTEM.ADMIN.PERF.EVENT') OBJTYPE(QUEUE) GROUP('monitoring') AUTHADD(DSP,INQ,GET)
+
+* Subscribe to the system metrics topic and allow use of a managed subscription queue.
+SET AUTHREC PROFILE('SYSTEM.ADMIN.TOPIC') OBJTYPE(TOPIC) GROUP('monitoring') AUTHADD(SUB,RESUME)
+SET AUTHREC PROFILE('SYSTEM.DEFAULT.MODEL.QUEUE') OBJTYPE(QUEUE) GROUP('monitoring') AUTHADD(DSP,INQ,GET)

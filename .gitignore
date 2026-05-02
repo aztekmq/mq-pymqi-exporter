@@ -1,3 +1,4 @@
 data
+.venv
 src\mq_exporter\__pycache__
 tests\__pycache__

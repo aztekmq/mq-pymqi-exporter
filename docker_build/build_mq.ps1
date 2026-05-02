@@ -22,7 +22,8 @@ $BaseWebPort = 9443
 $BaseRestPort = 9449
 $DataDir = Join-Path -Path $PSScriptRoot -ChildPath "data"
 $ComposeFile = Join-Path -Path $PSScriptRoot -ChildPath "docker-compose.yml"
-$ImageName = "ibmcom/mq"
+$ImageName = "mq-local-monitoring"
+$DockerfileDir = Join-Path -Path $PSScriptRoot -ChildPath "mq-monitoring"
 
 function Write-Step {
     param([string]$Message)
@@ -68,6 +69,9 @@ Write-Success "No port conflicts detected."
 Write-Step "Checking Docker availability..."
 $null = docker version
 $null = docker compose version
+
+Write-Step "Building custom MQ image with monitoring user and authorities..."
+docker build -t $ImageName $DockerfileDir
 
 Write-Step "Cleaning up old containers and volumes..."
 docker compose down --remove-orphans | Out-Null
