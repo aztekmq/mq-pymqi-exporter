@@ -340,6 +340,8 @@ The generated queue managers enable `ACCTQ(ON)` and `STATQ(ON)`, and grant the `
 - `SYSTEM.ADMIN.QMGR.EVENT`
 - `SYSTEM.ADMIN.PERF.EVENT`
 
+Because the exporter in this repo uses PCF commands, the startup config also grants `PUT` on `SYSTEM.ADMIN.COMMAND.QUEUE` and `PUT` plus `GET` on `SYSTEM.DEFAULT.MODEL.QUEUE` so the `app` principal can send admin inquiries and receive replies.
+
 They also grant `SUB` and `RESUME` on `SYSTEM.ADMIN.TOPIC`. For queue consumption, `GET` is the consume permission; `BROWSE` would be non-destructive read only.
 
 ## Running the Exporter

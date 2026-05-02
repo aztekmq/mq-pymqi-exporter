@@ -105,9 +105,11 @@ The generated image and MQSC startup config do the following on every queue mana
 - create OS user `app` with primary group `monitoring`
 - enable `ACCTQ(ON)` and `STATQ(ON)`
 - grant `CONNECT`, `INQ`, and `DSP` on the queue manager to group `monitoring`
+- grant `PUT` on `SYSTEM.ADMIN.COMMAND.QUEUE` for PCF admin inquiries
+- grant `PUT` and `GET` on `SYSTEM.DEFAULT.MODEL.QUEUE` for PCF reply queues
 - grant `GET` on `SYSTEM.ADMIN.ACCOUNTING.QUEUE`, `SYSTEM.ADMIN.STATISTICS.QUEUE`, `SYSTEM.ADMIN.QMGR.EVENT`, and `SYSTEM.ADMIN.PERF.EVENT`
 - grant `SUB` and `RESUME` on `SYSTEM.ADMIN.TOPIC`
-- grant `GET` on `SYSTEM.DEFAULT.MODEL.QUEUE` for managed subscription queues
+- mirror the same grants directly to principal `app` so client connections do not depend on OS group resolution alone
 
 For the consume/read distinction: `GET` is destructive consume permission on queues. `BROWSE` would only permit non-destructive reads.
 
