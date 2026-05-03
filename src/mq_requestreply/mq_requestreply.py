@@ -10,7 +10,6 @@ from typing import Sequence
 
 
 LOG = logging.getLogger("mq_requestreply")
-_MQ_BYTE_ID_LENGTH = 24
 
 
 @dataclass(frozen=True)
@@ -18,59 +17,60 @@ class RequestReplyConfig:
     queue_manager: str
     channel: str
     conn_name: str
-    request_queue: str
-    reply_queue: str
+    queue_name: str
     user: str = ""
     password: str = ""
     message: str | None = None
     message_file: str | None = None
     encoding: str = "utf-8"
     wait_timeout_ms: int = 30000
-    reply_max_bytes: int = 65536
-    correlation_id_hex: str | None = None
+    max_bytes: int = 65536
     expiry_ms: int = -1
     log_level: str = "INFO"
 
 
 class MQRequestReplyError(RuntimeError):
-    """Base exception for request/reply failures."""
+    """Base exception for same-queue put/get failures."""
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Send one IBM MQ request message and wait for one correlated reply.")
+    parser = argparse.ArgumentParser(description="Put one IBM MQ message and then get the next available message from the same queue.")
     parser.add_argument("--queue-manager", default=os.environ.get("MQ_QMGR", ""), help="Queue manager name.")
     parser.add_argument("--channel", default=os.environ.get("MQ_CHANNEL", ""), help="Client channel name.")
     parser.add_argument("--conn-name", default=os.environ.get("MQ_CONN_NAME", ""), help="Connection name, for example localhost(1415).")
     parser.add_argument("--user", default=os.environ.get("MQ_USER", ""), help="MQ client username.")
     parser.add_argument("--password", default=os.environ.get("MQ_PASSWORD", ""), help="MQ client password.")
-    parser.add_argument("--request-queue", default=os.environ.get("MQ_REQUEST_QUEUE", ""), help="Queue that receives the request message.")
-    parser.add_argument("--reply-queue", default=os.environ.get("MQ_REPLY_QUEUE", ""), help="Queue to read the correlated reply from.")
-    parser.add_argument("--message", default=os.environ.get("MQ_REQUEST_MESSAGE"), help="Inline request payload.")
-    parser.add_argument("--message-file", default=os.environ.get("MQ_REQUEST_MESSAGE_FILE"), help="Path to a file containing the request payload.")
-    parser.add_argument("--encoding", default=os.environ.get("MQ_MESSAGE_ENCODING", "utf-8"), help="Encoding for request and reply payload text.")
-    parser.add_argument("--wait-timeout-ms", default=os.environ.get("MQ_WAIT_TIMEOUT_MS", "30000"), type=int, help="How long to wait for the reply.")
-    parser.add_argument("--reply-max-bytes", default=os.environ.get("MQ_REPLY_MAX_BYTES", "65536"), type=int, help="Maximum reply payload size to read.")
-    parser.add_argument("--correlation-id-hex", default=os.environ.get("MQ_CORRELATION_ID_HEX"), help="Optional 48-character hex correlation id.")
-    parser.add_argument("--expiry-ms", default=os.environ.get("MQ_REQUEST_EXPIRY_MS", "-1"), type=int, help="Request expiry in milliseconds. Use -1 for unlimited.")
+    parser.add_argument("--queue", default=os.environ.get("MQ_QUEUE", ""), help="Queue used for both put and get.")
+    parser.add_argument("--request-queue", default=os.environ.get("MQ_REQUEST_QUEUE", ""), help="Compatibility alias for --queue.")
+    parser.add_argument("--reply-queue", default=os.environ.get("MQ_REPLY_QUEUE", ""), help="Compatibility alias for --queue.")
+    parser.add_argument("--message", default=os.environ.get("MQ_REQUEST_MESSAGE"), help="Inline message payload.")
+    parser.add_argument("--message-file", default=os.environ.get("MQ_REQUEST_MESSAGE_FILE"), help="Path to a file containing the message payload.")
+    parser.add_argument("--encoding", default=os.environ.get("MQ_MESSAGE_ENCODING", "utf-8"), help="Encoding for message payload text.")
+    parser.add_argument("--wait-timeout-ms", default=os.environ.get("MQ_WAIT_TIMEOUT_MS", "30000"), type=int, help="How long to wait for the next message.")
+    parser.add_argument("--max-bytes", default=os.environ.get("MQ_REPLY_MAX_BYTES", "65536"), type=int, help="Maximum payload size to read.")
+    parser.add_argument("--expiry-ms", default=os.environ.get("MQ_REQUEST_EXPIRY_MS", "-1"), type=int, help="Message expiry in milliseconds. Use -1 for unlimited.")
     parser.add_argument("--log-level", default=os.environ.get("MQ_LOG_LEVEL", "INFO"), help="Logging level.")
     return parser
 
 
 def args_to_config(args: argparse.Namespace) -> RequestReplyConfig:
+    queue_name = _first_non_empty(
+        getattr(args, "queue", ""),
+        getattr(args, "request_queue", ""),
+        getattr(args, "reply_queue", ""),
+    )
     return RequestReplyConfig(
         queue_manager=_strip_wrapping_quotes(str(args.queue_manager).strip()),
         channel=_strip_wrapping_quotes(str(args.channel).strip()),
         conn_name=_strip_wrapping_quotes(str(args.conn_name).strip()),
-        request_queue=_strip_wrapping_quotes(str(args.request_queue).strip()),
-        reply_queue=_strip_wrapping_quotes(str(args.reply_queue).strip()),
+        queue_name=_strip_wrapping_quotes(str(queue_name).strip()),
         user=_strip_wrapping_quotes(str(args.user).strip()),
         password=str(args.password),
         message=args.message,
         message_file=_strip_wrapping_quotes(str(args.message_file).strip()) if args.message_file else None,
         encoding=_strip_wrapping_quotes(str(args.encoding).strip()) or "utf-8",
         wait_timeout_ms=int(args.wait_timeout_ms),
-        reply_max_bytes=int(args.reply_max_bytes),
-        correlation_id_hex=_strip_wrapping_quotes(str(args.correlation_id_hex).strip()) if args.correlation_id_hex else None,
+        max_bytes=int(args.max_bytes),
         expiry_ms=int(args.expiry_ms),
         log_level=_strip_wrapping_quotes(str(args.log_level).strip()).upper() or "INFO",
     )
@@ -83,8 +83,7 @@ def validate_config(config: RequestReplyConfig) -> None:
             ("queue_manager", config.queue_manager),
             ("channel", config.channel),
             ("conn_name", config.conn_name),
-            ("request_queue", config.request_queue),
-            ("reply_queue", config.reply_queue),
+            ("queue_name", config.queue_name),
         )
         if not value
     ]
@@ -94,12 +93,10 @@ def validate_config(config: RequestReplyConfig) -> None:
         raise MQRequestReplyError("Provide exactly one of --message or --message-file.")
     if config.wait_timeout_ms < 1:
         raise MQRequestReplyError("--wait-timeout-ms must be a positive integer.")
-    if config.reply_max_bytes < 1:
-        raise MQRequestReplyError("--reply-max-bytes must be a positive integer.")
+    if config.max_bytes < 1:
+        raise MQRequestReplyError("--max-bytes must be a positive integer.")
     if config.expiry_ms < -1:
         raise MQRequestReplyError("--expiry-ms must be -1 or greater.")
-    if config.correlation_id_hex is not None:
-        parse_mq_byte_id(config.correlation_id_hex)
 
 
 def load_request_payload(config: RequestReplyConfig) -> bytes:
@@ -109,25 +106,18 @@ def load_request_payload(config: RequestReplyConfig) -> bytes:
     return Path(config.message_file).read_bytes()
 
 
-def parse_mq_byte_id(value: str) -> bytes:
-    compact = "".join(value.split())
-    if not compact:
-        raise MQRequestReplyError("Correlation id hex value cannot be empty.")
-    if len(compact) > _MQ_BYTE_ID_LENGTH * 2:
-        raise MQRequestReplyError("Correlation id hex value cannot exceed 48 hex characters.")
-    if len(compact) % 2 != 0:
-        raise MQRequestReplyError("Correlation id hex value must contain an even number of characters.")
-    try:
-        raw = bytes.fromhex(compact)
-    except ValueError as exc:
-        raise MQRequestReplyError("Correlation id hex value contains non-hexadecimal characters.") from exc
-    return raw.ljust(_MQ_BYTE_ID_LENGTH, b"\x00")
-
-
 def _strip_wrapping_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
         return value[1:-1].strip()
     return value
+
+
+def _first_non_empty(*values: object) -> str:
+    for value in values:
+        text = _strip_wrapping_quotes(str(value).strip())
+        if text:
+            return text
+    return ""
 
 
 def _mq_bytes(value: str, encoding: str = "ascii") -> bytes:
@@ -149,7 +139,7 @@ def format_mq_error(exc: Exception, *, operation: str, object_name: str | None =
         parts.append(f"reason={reason_code}")
     details = "; ".join(parts) + "."
     if reason_code == 2033 and object_name:
-        details += f" Timed out waiting for a reply on {object_name!r}."
+        details += f" Timed out waiting for the next message on {object_name!r}."
     return details
 
 
@@ -161,8 +151,7 @@ def run_request_reply(config: RequestReplyConfig) -> int:
 
     payload = load_request_payload(config)
     qmgr = None
-    request_queue = None
-    reply_queue = None
+    queue = None
     try:
         try:
             qmgr = pymqi.connect(
@@ -176,20 +165,17 @@ def run_request_reply(config: RequestReplyConfig) -> int:
             raise MQRequestReplyError(
                 format_mq_error(exc, operation="connect", object_name=config.queue_manager)
             ) from exc
-        open_output = getattr(pymqi.CMQC, "MQOO_OUTPUT", 0)
-        open_input = getattr(pymqi.CMQC, "MQOO_INPUT_SHARED", 0)
-        fail_if_quiescing = getattr(pymqi.CMQC, "MQOO_FAIL_IF_QUIESCING", 0)
+
+        queue_open_options = (
+            getattr(pymqi.CMQC, "MQOO_OUTPUT", 0)
+            | getattr(pymqi.CMQC, "MQOO_INPUT_SHARED", 0)
+            | getattr(pymqi.CMQC, "MQOO_FAIL_IF_QUIESCING", 0)
+        )
         try:
-            request_queue = pymqi.Queue(qmgr, config.request_queue, open_output | fail_if_quiescing)
+            queue = pymqi.Queue(qmgr, config.queue_name, queue_open_options)
         except pymqi.MQMIError as exc:
             raise MQRequestReplyError(
-                format_mq_error(exc, operation="open request queue", object_name=config.request_queue)
-            ) from exc
-        try:
-            reply_queue = pymqi.Queue(qmgr, config.reply_queue, open_input | fail_if_quiescing)
-        except pymqi.MQMIError as exc:
-            raise MQRequestReplyError(
-                format_mq_error(exc, operation="open reply queue", object_name=config.reply_queue)
+                format_mq_error(exc, operation="open queue", object_name=config.queue_name)
             ) from exc
 
         request_md = pymqi.MD()
@@ -199,38 +185,28 @@ def run_request_reply(config: RequestReplyConfig) -> int:
             | getattr(pymqi.CMQC, "MQPMO_NEW_MSG_ID", 0)
             | getattr(pymqi.CMQC, "MQPMO_NEW_CORREL_ID", 0)
         )
-        #request_md.ReplyToQ = _mq_bytes(config.reply_queue)
-        #request_md.ReplyToQMgr = _mq_bytes(config.queue_manager)
+        request_md.ReplyToQ = _mq_bytes(config.queue_name)
+        request_md.ReplyToQMgr = _mq_bytes(config.queue_manager)
         mqfmt_string = getattr(pymqi.CMQC, "MQFMT_STRING", None)
         if mqfmt_string is not None:
             request_md.Format = mqfmt_string if isinstance(mqfmt_string, bytes) else _mq_bytes(str(mqfmt_string))
         if config.expiry_ms >= 0:
             expiry_tenths = max(1, config.expiry_ms // 100) if config.expiry_ms > 0 else 0
             request_md.Expiry = expiry_tenths
-        #if config.correlation_id_hex is not None:
-        #    request_md.CorrelId = parse_mq_byte_id(config.correlation_id_hex)
 
-        LOG.info(
-            "Putting request message to %s via %s on %s",
-            config.request_queue,
-            config.channel,
-            config.conn_name,
-        )
+        LOG.info("Putting message to %s via %s on %s", config.queue_name, config.channel, config.conn_name)
         try:
-            request_queue.put(payload, request_md, request_pmo)
+            queue.put(payload, request_md, request_pmo)
         except pymqi.MQMIError as exc:
             raise MQRequestReplyError(
-                format_mq_error(exc, operation="put request message", object_name=config.request_queue)
+                format_mq_error(exc, operation="put message", object_name=config.queue_name)
             ) from exc
         except TypeError as exc:
             raise MQRequestReplyError(
-                f"Invalid MQMD value while putting to {config.request_queue!r}: {exc}"
+                f"Invalid MQMD value while putting to {config.queue_name!r}: {exc}"
             ) from exc
-        #request_message_id = bytes(request_md.MsgId)
-        #LOG.info("Request put complete. Message id=%s", request_message_id.hex().upper())
 
         reply_md = pymqi.MD()
-        #reply_md.CorrelId = request_message_id
         reply_gmo = pymqi.GMO()
         reply_gmo.Options = (
             getattr(pymqi.CMQC, "MQGMO_WAIT", 0)
@@ -238,47 +214,37 @@ def run_request_reply(config: RequestReplyConfig) -> int:
             | getattr(pymqi.CMQC, "MQGMO_CONVERT", 0)
         )
         reply_gmo.WaitInterval = config.wait_timeout_ms
-        #reply_gmo.MatchOptions = getattr(pymqi.CMQC, "MQMO_MATCH_CORREL_ID", 0)
 
-        LOG.info(
-            "Waiting up to %d ms for a reply on %s ",
-            config.wait_timeout_ms,
-            config.reply_queue
-        )
+        LOG.info("Waiting up to %d ms for the next message on %s", config.wait_timeout_ms, config.queue_name)
         try:
-            reply_bytes = reply_queue.get(config.reply_max_bytes, reply_md, reply_gmo)
+            reply_bytes = queue.get(config.max_bytes, reply_md, reply_gmo)
         except pymqi.MQMIError as exc:
             raise MQRequestReplyError(
-                format_mq_error(exc, operation="get reply message", object_name=config.reply_queue)
+                format_mq_error(exc, operation="get message", object_name=config.queue_name)
             ) from exc
         except TypeError as exc:
             raise MQRequestReplyError(
-                f"Invalid MQMD/GMO value while getting from {config.reply_queue!r}: {exc}"
+                f"Invalid MQMD/GMO value while getting from {config.queue_name!r}: {exc}"
             ) from exc
     finally:
-        if reply_queue is not None:
+        if queue is not None:
             try:
-                reply_queue.close()
+                queue.close()
             except Exception:
-                LOG.debug("Reply queue close failed", exc_info=True)
-        if request_queue is not None:
-            try:
-                request_queue.close()
-            except Exception:
-                LOG.debug("Request queue close failed", exc_info=True)
+                LOG.debug("Queue close failed", exc_info=True)
         if qmgr is not None:
             try:
                 qmgr.disconnect()
             except Exception:
                 LOG.debug("Queue manager disconnect failed", exc_info=True)
 
-    print("Reply message metadata:")
+    print("Message metadata:")
     print(f"  format: {getattr(reply_md, 'Format', '')!r}")
     print(f"  message_id: {bytes(reply_md.MsgId).hex().upper()}")
-    #print(f"  correlation_id: {bytes(reply_md.CorrelId).hex().upper()}")
-    print("Reply payload:")
+    print(f"  correlation_id: {bytes(reply_md.CorrelId).hex().upper()}")
+    print("Message payload:")
     if isinstance(reply_bytes, bytes):
-        sys.stdout.write(reply_bytes.decode(config.encoding, errors="replace"))
+        sys.stdout.write(reply_bytes.decode(config.encoding, errors='replace'))
     else:
         sys.stdout.write(str(reply_bytes))
     sys.stdout.write("\n")
