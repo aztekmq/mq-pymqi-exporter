@@ -36,6 +36,20 @@ CHANNEL_SPECS = {
 }
 
 
+@dataclass(frozen=True)
+class MQCollectionError(RuntimeError):
+    message: str
+    completion_code: int | None = None
+    reason_code: int | None = None
+    reason_name: str | None = None
+    operation: str | None = None
+    object_type: str | None = None
+    object_name: str | None = None
+
+    def __str__(self) -> str:
+        return self.message
+
+
 class PyMQICollector:
     def __init__(self) -> None:
         try:
@@ -64,17 +78,26 @@ class PyMQICollector:
 
     def _connect(self, config: QueueManagerConfig):
         password = config.connection.resolved_password()
-        return self.pymqi.connect(
-            config.connection.queue_manager,
-            config.connection.channel,
-            config.connection.conn_name,
-            config.connection.user,
-            password,
-        )
+        try:
+            return self.pymqi.connect(
+                config.connection.queue_manager,
+                config.connection.channel,
+                config.connection.conn_name,
+                config.connection.user,
+                password,
+            )
+        except self.pymqi.MQMIError as exc:
+            raise self._build_mq_error(
+                config,
+                exc,
+                operation="connect",
+                object_type="queue manager",
+                object_name=config.connection.queue_manager,
+            ) from exc
 
     def _collect_qmgr_metrics(self, config: QueueManagerConfig, pcf) -> list[MetricRecord]:
         records: list[MetricRecord] = []
-        responses = pcf.MQCMD_INQUIRE_Q_MGR()
+        responses = self._call_pcf(pcf.MQCMD_INQUIRE_Q_MGR, config, operation="MQCMD_INQUIRE_Q_MGR")
         for response in responses:
             for attr_name, spec in Q_MGR_SPECS.items():
                 attr_id = getattr(self.pymqi.CMQC, attr_name, None)
@@ -102,11 +125,16 @@ class PyMQICollector:
             return records
 
         for pattern in config.metrics.queue_patterns:
-            responses = pcf.MQCMD_INQUIRE_Q(
-                {
+            responses = self._call_pcf(
+                pcf.MQCMD_INQUIRE_Q,
+                config,
+                operation="MQCMD_INQUIRE_Q",
+                object_type="queue",
+                object_name=pattern,
+                arguments={
                     queue_name_attr: pattern,
                     queue_type_attr: queue_type_local,
-                }
+                },
             )
             for response in responses:
                 queue_name = str(response.get(queue_name_attr, "")).strip()
@@ -136,7 +164,14 @@ class PyMQICollector:
             return records
 
         for pattern in config.metrics.channel_patterns:
-            responses = pcf.MQCMD_INQUIRE_CHANNEL_STATUS({channel_name_attr: pattern})
+            responses = self._call_pcf(
+                pcf.MQCMD_INQUIRE_CHANNEL_STATUS,
+                config,
+                operation="MQCMD_INQUIRE_CHANNEL_STATUS",
+                object_type="channel",
+                object_name=pattern,
+                arguments={channel_name_attr: pattern},
+            )
             for response in responses:
                 channel_name = str(response.get(channel_name_attr, "")).strip()
                 if not channel_name:
@@ -164,4 +199,81 @@ class PyMQICollector:
             return 1.0 if value else 0.0
         if isinstance(value, (int, float)):
             return float(value)
+        return None
+
+    def _call_pcf(
+        self,
+        method,
+        config: QueueManagerConfig,
+        *,
+        operation: str,
+        object_type: str | None = None,
+        object_name: str | None = None,
+        arguments: dict[Any, Any] | None = None,
+    ):
+        try:
+            if arguments is None:
+                return method()
+            return method(arguments)
+        except self.pymqi.MQMIError as exc:
+            raise self._build_mq_error(
+                config,
+                exc,
+                operation=operation,
+                object_type=object_type,
+                object_name=object_name,
+            ) from exc
+
+    def _build_mq_error(
+        self,
+        config: QueueManagerConfig,
+        exc: Exception,
+        *,
+        operation: str,
+        object_type: str | None = None,
+        object_name: str | None = None,
+    ) -> MQCollectionError:
+        completion_code = self._extract_error_code(exc, "comp")
+        reason_code = self._extract_error_code(exc, "reason")
+        reason_name = self._mq_reason_name(reason_code)
+        message_parts = [f"IBM MQ operation {operation} failed for {config.name}"]
+        if object_type and object_name:
+            message_parts.append(f"{object_type}={object_name!r}")
+        elif object_type:
+            message_parts.append(f"object_type={object_type}")
+        if completion_code is not None:
+            message_parts.append(f"completion_code={completion_code}")
+        if reason_code is not None:
+            if reason_name:
+                message_parts.append(f"reason={reason_code} ({reason_name})")
+            else:
+                message_parts.append(f"reason={reason_code}")
+        detail = "; ".join(message_parts) + "."
+        if reason_code == 2085 and object_type and object_name:
+            detail += f" The requested {object_type} name {object_name!r} is unknown to the queue manager."
+        return MQCollectionError(
+            message=detail,
+            completion_code=completion_code,
+            reason_code=reason_code,
+            reason_name=reason_name,
+            operation=operation,
+            object_type=object_type,
+            object_name=object_name,
+        )
+
+    @staticmethod
+    def _extract_error_code(exc: Exception, attribute: str) -> int | None:
+        value = getattr(exc, attribute, None)
+        if isinstance(value, int):
+            return value
+        return None
+
+    def _mq_reason_name(self, reason_code: int | None) -> str | None:
+        if reason_code is None:
+            return None
+        for attr_name in dir(self.pymqi.CMQC):
+            if not attr_name.startswith("MQRC_"):
+                continue
+            if getattr(self.pymqi.CMQC, attr_name, None) == reason_code:
+                return attr_name
         return None

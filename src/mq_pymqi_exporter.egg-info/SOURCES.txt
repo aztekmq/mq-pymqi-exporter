@@ -15,3 +15,4 @@ src/mq_pymqi_exporter.egg-info/requires.txt
 src/mq_pymqi_exporter.egg-info/top_level.txt
 tests/test_config.py
 tests/test_metrics.py
+tests/test_shutdown.py

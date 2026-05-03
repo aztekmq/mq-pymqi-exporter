@@ -112,10 +112,11 @@ class PollScheduler:
         name = job.config.name
         try:
             records, duration = self._poll_once(job.config)
-        except Exception:
-            LOG.exception("Background poll failed for %s", name)
+        except Exception as exc:
+            error_message = str(exc)
+            LOG.error("Background poll failed for %s: %s", name, error_message, exc_info=True)
             self._store.record_failure(name, 0.0)
-            self._runtime_state.mark_failure(name, "background poll failed; see exporter logs")
+            self._runtime_state.mark_failure(name, error_message)
         else:
             self._store.record_success(name, duration, records)
             self._runtime_state.mark_success(name, duration, len(records))
