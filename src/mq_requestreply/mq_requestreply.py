@@ -34,7 +34,7 @@ class MQRequestReplyError(RuntimeError):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Put one IBM MQ message and then get the next available message from the same queue.")
+    parser = argparse.ArgumentParser(description="Put one IBM MQ message and then drain all available messages from the same queue.")
     parser.add_argument("--queue-manager", default=os.environ.get("MQ_QMGR", ""), help="Queue manager name.")
     parser.add_argument("--channel", default=os.environ.get("MQ_CHANNEL", ""), help="Client channel name.")
     parser.add_argument("--conn-name", default=os.environ.get("MQ_CONN_NAME", ""), help="Connection name, for example localhost(1415).")
@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--message", default=os.environ.get("MQ_REQUEST_MESSAGE"), help="Inline message payload.")
     parser.add_argument("--message-file", default=os.environ.get("MQ_REQUEST_MESSAGE_FILE"), help="Path to a file containing the message payload.")
     parser.add_argument("--encoding", default=os.environ.get("MQ_MESSAGE_ENCODING", "utf-8"), help="Encoding for message payload text.")
-    parser.add_argument("--wait-timeout-ms", default=os.environ.get("MQ_WAIT_TIMEOUT_MS", "30000"), type=int, help="How long to wait for the next message.")
+    parser.add_argument("--wait-timeout-ms", default=os.environ.get("MQ_WAIT_TIMEOUT_MS", "30000"), type=int, help="How long to wait for the first message before draining the queue.")
     parser.add_argument("--max-bytes", default=os.environ.get("MQ_REPLY_MAX_BYTES", "65536"), type=int, help="Maximum payload size to read.")
     parser.add_argument("--expiry-ms", default=os.environ.get("MQ_REQUEST_EXPIRY_MS", "-1"), type=int, help="Message expiry in milliseconds. Use -1 for unlimited.")
     parser.add_argument("--log-level", default=os.environ.get("MQ_LOG_LEVEL", "INFO"), help="Logging level.")
@@ -139,7 +139,7 @@ def format_mq_error(exc: Exception, *, operation: str, object_name: str | None =
         parts.append(f"reason={reason_code}")
     details = "; ".join(parts) + "."
     if reason_code == 2033 and object_name:
-        details += f" Timed out waiting for the next message on {object_name!r}."
+        details += f" Timed out waiting for messages on {object_name!r}."
     return details
 
 
@@ -206,26 +206,38 @@ def run_request_reply(config: RequestReplyConfig) -> int:
                 f"Invalid MQMD value while putting to {config.queue_name!r}: {exc}"
             ) from exc
 
-        reply_md = pymqi.MD()
-        reply_gmo = pymqi.GMO()
-        reply_gmo.Options = (
+        wait_interval = config.wait_timeout_ms
+        get_options = (
             getattr(pymqi.CMQC, "MQGMO_WAIT", 0)
             | getattr(pymqi.CMQC, "MQGMO_FAIL_IF_QUIESCING", 0)
             | getattr(pymqi.CMQC, "MQGMO_CONVERT", 0)
         )
-        reply_gmo.WaitInterval = config.wait_timeout_ms
+        messages: list[tuple[object, object]] = []
 
-        LOG.info("Waiting up to %d ms for the next message on %s", config.wait_timeout_ms, config.queue_name)
-        try:
-            reply_bytes = queue.get(config.max_bytes, reply_md, reply_gmo)
-        except pymqi.MQMIError as exc:
-            raise MQRequestReplyError(
-                format_mq_error(exc, operation="get message", object_name=config.queue_name)
-            ) from exc
-        except TypeError as exc:
-            raise MQRequestReplyError(
-                f"Invalid MQMD/GMO value while getting from {config.queue_name!r}: {exc}"
-            ) from exc
+        LOG.info("Waiting up to %d ms for messages on %s, then draining the queue", config.wait_timeout_ms, config.queue_name)
+        while True:
+            reply_md = pymqi.MD()
+            reply_gmo = pymqi.GMO()
+            reply_gmo.Options = get_options
+            reply_gmo.WaitInterval = wait_interval
+            try:
+                reply_bytes = queue.get(config.max_bytes, reply_md, reply_gmo)
+                messages.append((reply_md, reply_bytes))
+                wait_interval = 1
+            except pymqi.MQMIError as exc:
+                if getattr(exc, "reason", None) == 2033:
+                    if messages:
+                        break
+                    raise MQRequestReplyError(
+                        format_mq_error(exc, operation="get messages", object_name=config.queue_name)
+                    ) from exc
+                raise MQRequestReplyError(
+                    format_mq_error(exc, operation="get messages", object_name=config.queue_name)
+                ) from exc
+            except TypeError as exc:
+                raise MQRequestReplyError(
+                    f"Invalid MQMD/GMO value while getting from {config.queue_name!r}: {exc}"
+                ) from exc
     finally:
         if queue is not None:
             try:
@@ -238,16 +250,18 @@ def run_request_reply(config: RequestReplyConfig) -> int:
             except Exception:
                 LOG.debug("Queue manager disconnect failed", exc_info=True)
 
-    print("Message metadata:")
-    print(f"  format: {getattr(reply_md, 'Format', '')!r}")
-    print(f"  message_id: {bytes(reply_md.MsgId).hex().upper()}")
-    print(f"  correlation_id: {bytes(reply_md.CorrelId).hex().upper()}")
-    print("Message payload:")
-    if isinstance(reply_bytes, bytes):
-        sys.stdout.write(reply_bytes.decode(config.encoding, errors='replace'))
-    else:
-        sys.stdout.write(str(reply_bytes))
-    sys.stdout.write("\n")
+    print(f"Drained {len(messages)} message(s) from {config.queue_name}:")
+    for index, (reply_md, reply_bytes) in enumerate(messages, start=1):
+        print(f"Message {index}:")
+        print(f"  format: {getattr(reply_md, 'Format', '')!r}")
+        print(f"  message_id: {bytes(reply_md.MsgId).hex().upper()}")
+        print(f"  correlation_id: {bytes(reply_md.CorrelId).hex().upper()}")
+        print("  payload:")
+        if isinstance(reply_bytes, bytes):
+            sys.stdout.write(reply_bytes.decode(config.encoding, errors='replace'))
+        else:
+            sys.stdout.write(str(reply_bytes))
+        sys.stdout.write("\n")
     return 0
 
 
