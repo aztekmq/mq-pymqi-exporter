@@ -58,21 +58,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def args_to_config(args: argparse.Namespace) -> RequestReplyConfig:
     return RequestReplyConfig(
-        queue_manager=str(args.queue_manager).strip(),
-        channel=str(args.channel).strip(),
-        conn_name=str(args.conn_name).strip(),
-        request_queue=str(args.request_queue).strip(),
-        reply_queue=str(args.reply_queue).strip(),
-        user=str(args.user).strip(),
+        queue_manager=_strip_wrapping_quotes(str(args.queue_manager).strip()),
+        channel=_strip_wrapping_quotes(str(args.channel).strip()),
+        conn_name=_strip_wrapping_quotes(str(args.conn_name).strip()),
+        request_queue=_strip_wrapping_quotes(str(args.request_queue).strip()),
+        reply_queue=_strip_wrapping_quotes(str(args.reply_queue).strip()),
+        user=_strip_wrapping_quotes(str(args.user).strip()),
         password=str(args.password),
         message=args.message,
-        message_file=args.message_file,
-        encoding=str(args.encoding).strip() or "utf-8",
+        message_file=_strip_wrapping_quotes(str(args.message_file).strip()) if args.message_file else None,
+        encoding=_strip_wrapping_quotes(str(args.encoding).strip()) or "utf-8",
         wait_timeout_ms=int(args.wait_timeout_ms),
         reply_max_bytes=int(args.reply_max_bytes),
-        correlation_id_hex=str(args.correlation_id_hex).strip() if args.correlation_id_hex else None,
+        correlation_id_hex=_strip_wrapping_quotes(str(args.correlation_id_hex).strip()) if args.correlation_id_hex else None,
         expiry_ms=int(args.expiry_ms),
-        log_level=str(args.log_level).strip().upper() or "INFO",
+        log_level=_strip_wrapping_quotes(str(args.log_level).strip()).upper() or "INFO",
     )
 
 
@@ -124,6 +124,12 @@ def parse_mq_byte_id(value: str) -> bytes:
     return raw.ljust(_MQ_BYTE_ID_LENGTH, b"\x00")
 
 
+def _strip_wrapping_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1].strip()
+    return value
+
+
 def format_mq_error(exc: Exception, *, operation: str, object_name: str | None = None) -> str:
     completion_code = getattr(exc, "comp", None)
     reason_code = getattr(exc, "reason", None)
@@ -151,18 +157,33 @@ def run_request_reply(config: RequestReplyConfig) -> int:
     request_queue = None
     reply_queue = None
     try:
-        qmgr = pymqi.connect(
-            config.queue_manager,
-            config.channel,
-            config.conn_name,
-            config.user,
-            config.password,
-        )
+        try:
+            qmgr = pymqi.connect(
+                config.queue_manager,
+                config.channel,
+                config.conn_name,
+                config.user,
+                config.password,
+            )
+        except pymqi.MQMIError as exc:
+            raise MQRequestReplyError(
+                format_mq_error(exc, operation="connect", object_name=config.queue_manager)
+            ) from exc
         open_output = getattr(pymqi.CMQC, "MQOO_OUTPUT", 0)
         open_input = getattr(pymqi.CMQC, "MQOO_INPUT_SHARED", 0)
         fail_if_quiescing = getattr(pymqi.CMQC, "MQOO_FAIL_IF_QUIESCING", 0)
-        request_queue = pymqi.Queue(qmgr, config.request_queue, open_output | fail_if_quiescing)
-        reply_queue = pymqi.Queue(qmgr, config.reply_queue, open_input | fail_if_quiescing)
+        try:
+            request_queue = pymqi.Queue(qmgr, config.request_queue, open_output | fail_if_quiescing)
+        except pymqi.MQMIError as exc:
+            raise MQRequestReplyError(
+                format_mq_error(exc, operation="open request queue", object_name=config.request_queue)
+            ) from exc
+        try:
+            reply_queue = pymqi.Queue(qmgr, config.reply_queue, open_input | fail_if_quiescing)
+        except pymqi.MQMIError as exc:
+            raise MQRequestReplyError(
+                format_mq_error(exc, operation="open reply queue", object_name=config.reply_queue)
+            ) from exc
 
         request_md = pymqi.MD()
         request_pmo = pymqi.PMO()
@@ -185,7 +206,12 @@ def run_request_reply(config: RequestReplyConfig) -> int:
             config.channel,
             config.conn_name,
         )
-        request_queue.put(payload, request_md, request_pmo)
+        try:
+            request_queue.put(payload, request_md, request_pmo)
+        except pymqi.MQMIError as exc:
+            raise MQRequestReplyError(
+                format_mq_error(exc, operation="put request message", object_name=config.request_queue)
+            ) from exc
         request_message_id = bytes(request_md.MsgId)
         LOG.info("Request put complete. Message id=%s", request_message_id.hex().upper())
 
@@ -206,10 +232,12 @@ def run_request_reply(config: RequestReplyConfig) -> int:
             config.reply_queue,
             request_message_id.hex().upper(),
         )
-        reply_bytes = reply_queue.get(config.reply_max_bytes, reply_md, reply_gmo)
-    except pymqi.MQMIError as exc:
-        target = config.reply_queue if getattr(exc, "reason", None) == 2033 else None
-        raise MQRequestReplyError(format_mq_error(exc, operation="request/reply", object_name=target)) from exc
+        try:
+            reply_bytes = reply_queue.get(config.reply_max_bytes, reply_md, reply_gmo)
+        except pymqi.MQMIError as exc:
+            raise MQRequestReplyError(
+                format_mq_error(exc, operation="get reply message", object_name=config.reply_queue)
+            ) from exc
     finally:
         if reply_queue is not None:
             try:

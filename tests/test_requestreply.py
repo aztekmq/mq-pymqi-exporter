@@ -6,6 +6,7 @@ import unittest
 from mq_requestreply.mq_requestreply import (
     MQRequestReplyError,
     RequestReplyConfig,
+    args_to_config,
     load_request_payload,
     parse_mq_byte_id,
     validate_config,
@@ -43,6 +44,35 @@ class RequestReplyTests(unittest.TestCase):
             path = handle.name
         config = self._base_config(message=None, message_file=path)
         self.assertEqual(load_request_payload(config), b'{"ping":true}')
+
+    def test_args_to_config_strips_wrapping_quotes(self) -> None:
+        args = type(
+            "Args",
+            (),
+            {
+                "queue_manager": '"QM1"',
+                "channel": '"DEV.APP.SVRCONN"',
+                "conn_name": '"localhost(1415)"',
+                "request_queue": '"APP.REQUEST"',
+                "reply_queue": '"APP.REPLY"',
+                "user": '"app"',
+                "password": "passw0rd",
+                "message": "ping",
+                "message_file": None,
+                "encoding": '"utf-8"',
+                "wait_timeout_ms": 30000,
+                "reply_max_bytes": 65536,
+                "correlation_id_hex": None,
+                "expiry_ms": -1,
+                "log_level": '"info"',
+            },
+        )()
+
+        config = args_to_config(args)
+
+        self.assertEqual(config.request_queue, "APP.REQUEST")
+        self.assertEqual(config.reply_queue, "APP.REPLY")
+        self.assertEqual(config.log_level, "INFO")
 
 
 if __name__ == "__main__":

@@ -13,8 +13,11 @@ src/mq_pymqi_exporter.egg-info/SOURCES.txt
 src/mq_pymqi_exporter.egg-info/dependency_links.txt
 src/mq_pymqi_exporter.egg-info/requires.txt
 src/mq_pymqi_exporter.egg-info/top_level.txt
+src/mq_requestreply/__init__.py
+src/mq_requestreply/mq_requestreply.py
 tests/test_config.py
 tests/test_main.py
 tests/test_metrics.py
 tests/test_mq.py
+tests/test_requestreply.py
 tests/test_shutdown.py
