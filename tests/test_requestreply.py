@@ -6,6 +6,7 @@ import unittest
 from mq_requestreply.mq_requestreply import (
     MQRequestReplyError,
     RequestReplyConfig,
+    _mq_bytes,
     args_to_config,
     load_request_payload,
     parse_mq_byte_id,
@@ -73,6 +74,9 @@ class RequestReplyTests(unittest.TestCase):
         self.assertEqual(config.request_queue, "APP.REQUEST")
         self.assertEqual(config.reply_queue, "APP.REPLY")
         self.assertEqual(config.log_level, "INFO")
+
+    def test_mq_bytes_returns_ascii_bytes(self) -> None:
+        self.assertEqual(_mq_bytes("APP.REPLY"), b"APP.REPLY")
 
 
 if __name__ == "__main__":

@@ -130,6 +130,13 @@ def _strip_wrapping_quotes(value: str) -> str:
     return value
 
 
+def _mq_bytes(value: str, encoding: str = "ascii") -> bytes:
+    try:
+        return value.encode(encoding)
+    except UnicodeEncodeError as exc:
+        raise MQRequestReplyError(f"Value {value!r} cannot be encoded as {encoding} for MQMD fields.") from exc
+
+
 def format_mq_error(exc: Exception, *, operation: str, object_name: str | None = None) -> str:
     completion_code = getattr(exc, "comp", None)
     reason_code = getattr(exc, "reason", None)
@@ -192,8 +199,11 @@ def run_request_reply(config: RequestReplyConfig) -> int:
             | getattr(pymqi.CMQC, "MQPMO_NEW_MSG_ID", 0)
             | getattr(pymqi.CMQC, "MQPMO_NEW_CORREL_ID", 0)
         )
-        request_md.ReplyToQ = config.reply_queue
-        request_md.ReplyToQMgr = config.queue_manager
+        request_md.ReplyToQ = _mq_bytes(config.reply_queue)
+        request_md.ReplyToQMgr = _mq_bytes(config.queue_manager)
+        mqfmt_string = getattr(pymqi.CMQC, "MQFMT_STRING", None)
+        if mqfmt_string is not None:
+            request_md.Format = mqfmt_string if isinstance(mqfmt_string, bytes) else _mq_bytes(str(mqfmt_string))
         if config.expiry_ms >= 0:
             expiry_tenths = max(1, config.expiry_ms // 100) if config.expiry_ms > 0 else 0
             request_md.Expiry = expiry_tenths
@@ -211,6 +221,10 @@ def run_request_reply(config: RequestReplyConfig) -> int:
         except pymqi.MQMIError as exc:
             raise MQRequestReplyError(
                 format_mq_error(exc, operation="put request message", object_name=config.request_queue)
+            ) from exc
+        except TypeError as exc:
+            raise MQRequestReplyError(
+                f"Invalid MQMD value while putting to {config.request_queue!r}: {exc}"
             ) from exc
         request_message_id = bytes(request_md.MsgId)
         LOG.info("Request put complete. Message id=%s", request_message_id.hex().upper())
@@ -237,6 +251,10 @@ def run_request_reply(config: RequestReplyConfig) -> int:
         except pymqi.MQMIError as exc:
             raise MQRequestReplyError(
                 format_mq_error(exc, operation="get reply message", object_name=config.reply_queue)
+            ) from exc
+        except TypeError as exc:
+            raise MQRequestReplyError(
+                f"Invalid MQMD/GMO value while getting from {config.reply_queue!r}: {exc}"
             ) from exc
     finally:
         if reply_queue is not None:
