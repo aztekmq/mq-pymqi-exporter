@@ -1,10 +1,18 @@
 * Enable the main monitoring feeds this repo cares about.
 ALTER QMGR ACCTQ(ON) STATQ(ON)
 
+* Define a local queue
+DEFINE QLOCAL(APP.LOCAL) REPLACE
+
+* Define Server Conn Channel
+DEFINE CHANNEL(DEV.APP.SVRCONN) CHLTYPE(SVRCONN) TRPTYPE(TCP) REPLACE
+
 * Queue-manager level inquiry and display access for both the OS group and the
 * concrete client principal used by the exporter.
 SET AUTHREC GROUP('monitoring') OBJTYPE(QMGR) AUTHADD(CONNECT,INQ,DSP)
 SET AUTHREC PRINCIPAL('app') OBJTYPE(QMGR) AUTHADD(CONNECT,INQ,DSP)
+SET AUTHREC PROFILE('APP.**') OBJTYPE(QUEUE) GROUP('monitoring') AUTHADD(PUT,GET,INQ,DSP)
+SET AUTHREC PROFILE('DEV.APP.SVRCONN') GROUP('monitoring') OBJTYPE(CHANNEL) AUTHADD(CHG,DLT,DSP,CTRL,CTRLX)
 
 * PCF-based collection sends requests to the admin command queue and consumes
 * replies from a dynamic queue based on the default model queue.

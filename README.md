@@ -411,3 +411,61 @@ The obvious next extension is broader parity with the Go exporter:
 - container packaging for the exporter itself
 
 This repo is now structured so those additions do not require changing the fundamental "background polling plus cached serving" model.
+
+```shell
+(.venv) C:\Users\User\Documents\githubdev\mq-pymqi-exporter\docker_build>build_mq.bat
+
+cmdlet build_mq.ps1 at command pipeline position 1
+Supply values for the following parameters:
+NumberOfQmgrs: 1
+Checking for port conflicts...
+No port conflicts detected.
+Checking Docker availability...
+Building custom MQ image with monitoring user and authorities...
+[+] Building 0.8s (8/8) FINISHED                              docker:desktop-linux
+ => [internal] load build definition from Dockerfile                          0.0s
+ => => transferring dockerfile: 246B                                          0.0s
+ => [internal] load metadata for docker.io/ibmcom/mq:latest                   0.0s
+ => [internal] load .dockerignore                                             0.0s
+ => => transferring context: 2B                                               0.0s
+ => [1/3] FROM docker.io/ibmcom/mq:latest@sha256:7590ea14750ecba7bd24b758dc9  0.1s
+ => => resolve docker.io/ibmcom/mq:latest@sha256:7590ea14750ecba7bd24b758dc9  0.1s
+ => [internal] load build context                                             0.0s
+ => => transferring context: 42B                                              0.0s
+ => CACHED [2/3] RUN groupadd --system monitoring     && useradd --system --  0.0s
+ => CACHED [3/3] COPY monitoring-auth.mqsc /etc/mqm/monitoring-auth.mqsc      0.0s
+ => exporting to image                                                        0.3s
+ => => exporting layers                                                       0.0s
+ => => exporting manifest sha256:838305b44cc2930fd093d6aa0f088cab0b6678b693b  0.0s
+ => => exporting config sha256:a440af89c4fac8973c90425ddd045646ae46d797165b4  0.0s
+ => => exporting attestation manifest sha256:37cc252e40486442349ecfca0cc4a37  0.0s
+ => => exporting manifest list sha256:77a6300c155b1a5963561a6232b20ca0739ba9  0.0s
+ => => naming to docker.io/library/mq-local-monitoring:latest                 0.0s
+ => => unpacking to docker.io/library/mq-local-monitoring:latest              0.1s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/u0j5tyoabpbggiv2hchjhxgng
+
+What's next:
+    View a summary of image vulnerabilities and recommendations → docker scout quickview 
+Cleaning up old containers and volumes...
+time="2026-05-03T15:56:15-05:00" level=warning msg="C:\\Users\\User\\Documents\\githubdev\\mq-pymqi-exporter\\docker_build\\docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+Creating data directories...
+Generating docker-compose.yml...
+Starting up 1 IBM MQ containers...
+time="2026-05-03T15:56:16-05:00" level=warning msg="C:\\Users\\User\\Documents\\githubdev\\mq-pymqi-exporter\\docker_build\\docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+[+] Running 2/2
+ ✔ Network docker_build_default  Created                                      0.1s 
+ ✔ Container qm1                 Started                                      0.7s 
+All containers started successfully.
+
+Deployment Summary:
+
+QMGR ContainerName ListenerPort WebPort RestPort
+---- ------------- ------------ ------- --------
+QM1  qm1                   1415    9444     9450
+
+
+
+To connect to a container:
+docker exec -it <container_name> bash
+```
