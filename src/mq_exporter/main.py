@@ -39,6 +39,7 @@ def main() -> int:
     scheduler = PollScheduler(config, collector, store, runtime_state)
     http_server = MetricsHttpServer(config.server, store.registry, runtime_state)
     interrupt_count = 0
+    forced_interrupt = False
 
     def _stop(_signum=None, _frame=None) -> None:
         nonlocal interrupt_count
@@ -50,20 +51,28 @@ def main() -> int:
         LOG.warning("Second interrupt received, forcing process exit")
         raise KeyboardInterrupt()
 
-    signal.signal(signal.SIGINT, _stop)
-    signal.signal(signal.SIGTERM, _stop)
+    for sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _stop)
+        except (ValueError, OSError):
+            LOG.debug("Signal handler registration skipped for %s", sig)
 
     try:
         http_server.start()
         scheduler.start()
-        stop_event.wait()
+        while not stop_event.wait(timeout=0.5):
+            continue
     except KeyboardInterrupt:
-        LOG.warning("Forced shutdown requested")
+        forced_interrupt = True
+        stop_event.set()
+        LOG.warning("Keyboard interrupt received, shutting down")
     finally:
         scheduler.stop()
         http_server.stop()
 
-    if interrupt_count > 1:
+    if forced_interrupt or interrupt_count > 0:
         return 130
     return 0
 
