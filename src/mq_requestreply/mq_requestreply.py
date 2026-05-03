@@ -199,16 +199,16 @@ def run_request_reply(config: RequestReplyConfig) -> int:
             | getattr(pymqi.CMQC, "MQPMO_NEW_MSG_ID", 0)
             | getattr(pymqi.CMQC, "MQPMO_NEW_CORREL_ID", 0)
         )
-        request_md.ReplyToQ = _mq_bytes(config.reply_queue)
-        request_md.ReplyToQMgr = _mq_bytes(config.queue_manager)
+        #request_md.ReplyToQ = _mq_bytes(config.reply_queue)
+        #request_md.ReplyToQMgr = _mq_bytes(config.queue_manager)
         mqfmt_string = getattr(pymqi.CMQC, "MQFMT_STRING", None)
         if mqfmt_string is not None:
             request_md.Format = mqfmt_string if isinstance(mqfmt_string, bytes) else _mq_bytes(str(mqfmt_string))
         if config.expiry_ms >= 0:
             expiry_tenths = max(1, config.expiry_ms // 100) if config.expiry_ms > 0 else 0
             request_md.Expiry = expiry_tenths
-        if config.correlation_id_hex is not None:
-            request_md.CorrelId = parse_mq_byte_id(config.correlation_id_hex)
+        #if config.correlation_id_hex is not None:
+        #    request_md.CorrelId = parse_mq_byte_id(config.correlation_id_hex)
 
         LOG.info(
             "Putting request message to %s via %s on %s",
@@ -226,11 +226,11 @@ def run_request_reply(config: RequestReplyConfig) -> int:
             raise MQRequestReplyError(
                 f"Invalid MQMD value while putting to {config.request_queue!r}: {exc}"
             ) from exc
-        request_message_id = bytes(request_md.MsgId)
-        LOG.info("Request put complete. Message id=%s", request_message_id.hex().upper())
+        #request_message_id = bytes(request_md.MsgId)
+        #LOG.info("Request put complete. Message id=%s", request_message_id.hex().upper())
 
         reply_md = pymqi.MD()
-        reply_md.CorrelId = request_message_id
+        #reply_md.CorrelId = request_message_id
         reply_gmo = pymqi.GMO()
         reply_gmo.Options = (
             getattr(pymqi.CMQC, "MQGMO_WAIT", 0)
@@ -238,13 +238,12 @@ def run_request_reply(config: RequestReplyConfig) -> int:
             | getattr(pymqi.CMQC, "MQGMO_CONVERT", 0)
         )
         reply_gmo.WaitInterval = config.wait_timeout_ms
-        reply_gmo.MatchOptions = getattr(pymqi.CMQC, "MQMO_MATCH_CORREL_ID", 0)
+        #reply_gmo.MatchOptions = getattr(pymqi.CMQC, "MQMO_MATCH_CORREL_ID", 0)
 
         LOG.info(
-            "Waiting up to %d ms for a reply on %s with correl id %s",
+            "Waiting up to %d ms for a reply on %s ",
             config.wait_timeout_ms,
-            config.reply_queue,
-            request_message_id.hex().upper(),
+            config.reply_queue
         )
         try:
             reply_bytes = reply_queue.get(config.reply_max_bytes, reply_md, reply_gmo)
@@ -276,7 +275,7 @@ def run_request_reply(config: RequestReplyConfig) -> int:
     print("Reply message metadata:")
     print(f"  format: {getattr(reply_md, 'Format', '')!r}")
     print(f"  message_id: {bytes(reply_md.MsgId).hex().upper()}")
-    print(f"  correlation_id: {bytes(reply_md.CorrelId).hex().upper()}")
+    #print(f"  correlation_id: {bytes(reply_md.CorrelId).hex().upper()}")
     print("Reply payload:")
     if isinstance(reply_bytes, bytes):
         sys.stdout.write(reply_bytes.decode(config.encoding, errors="replace"))
