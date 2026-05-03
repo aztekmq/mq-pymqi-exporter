@@ -14,6 +14,8 @@ metrics:
   include_queue_manager: true
   include_queues: true
   include_channels: true
+  include_accounting: true
+  include_activity_trace: true
   queue_patterns:
     - APP.*
     - SYSTEM.ADMIN.COMMAND.QUEUE

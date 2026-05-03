@@ -17,6 +17,56 @@ from .scheduler import PollScheduler
 LOG = logging.getLogger(__name__)
 
 
+def _startup_target_lines(config) -> list[str]:
+    accounting_enabled = any(getattr(qmgr.metrics, "include_accounting", False) for qmgr in getattr(config, "queue_managers", ()))
+    activity_enabled = any(getattr(qmgr.metrics, "include_activity_trace", False) for qmgr in getattr(config, "queue_managers", ()))
+    collector_mode = "pyMQI PCF polling plus admin queue draining" if (accounting_enabled or activity_enabled) else "pyMQI PCF polling only"
+    lines = [
+        f"Collector mode: {collector_mode}.",
+        "MQ objects used by the exporter for metric polling:",
+        "  PCF command queue: SYSTEM.ADMIN.COMMAND.QUEUE",
+        "  PCF reply model queue: SYSTEM.DEFAULT.MODEL.QUEUE",
+    ]
+    for qmgr in getattr(config, "queue_managers", ()):
+        queue_patterns = ", ".join(qmgr.metrics.queue_patterns) if qmgr.metrics.include_queues else "<disabled>"
+        channel_patterns = ", ".join(qmgr.metrics.channel_patterns) if qmgr.metrics.include_channels else "<disabled>"
+        lines.extend(
+            [
+                (
+                    f"  qmgr={qmgr.name} connect={qmgr.connection.queue_manager} "
+                    f"channel={qmgr.connection.channel} conn_name={qmgr.connection.conn_name} user={qmgr.connection.user or '<blank>'}"
+                ),
+                f"    queue manager metrics: {'enabled' if qmgr.metrics.include_queue_manager else 'disabled'}",
+                f"    queue inquiry patterns: {queue_patterns}",
+                f"    channel inquiry patterns: {channel_patterns}",
+                (
+                    f"    accounting queue drain: {'enabled' if getattr(qmgr.metrics, 'include_accounting', False) else 'disabled'} "
+                    f"({getattr(qmgr.metrics, 'accounting_queue_name', 'SYSTEM.ADMIN.ACCOUNTING.QUEUE')})"
+                ),
+                (
+                    f"    activity trace queue drain: {'enabled' if getattr(qmgr.metrics, 'include_activity_trace', False) else 'disabled'} "
+                    f"({getattr(qmgr.metrics, 'activity_trace_queue_name', 'SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE')})"
+                ),
+            ]
+        )
+    lines.extend(
+        [
+            "IBM MQ objects that must be enabled if you want admin/accounting/activity data generated on the queue manager side:",
+            "  SYSTEM.ADMIN.ACCOUNTING.QUEUE",
+            "  SYSTEM.ADMIN.STATISTICS.QUEUE",
+            "  SYSTEM.ADMIN.QMGR.EVENT",
+            "  SYSTEM.ADMIN.PERF.EVENT",
+            "  SYSTEM.ADMIN.CHANNEL.EVENT",
+            "  SYSTEM.ADMIN.COMMAND.EVENT",
+            "  SYSTEM.ADMIN.CONFIG.EVENT",
+            "  SYSTEM.ADMIN.ACTIVITY.QUEUE",
+            "  SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE",
+            "  SYSTEM.ADMIN.TOPIC",
+        ]
+    )
+    return lines
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="IBM MQ Prometheus exporter using background pyMQI polling.")
     parser.add_argument("--config", required=True, help="Path to exporter YAML file.")
@@ -40,6 +90,9 @@ def main() -> int:
     http_server = MetricsHttpServer(config.server, store.registry, runtime_state)
     interrupt_count = 0
     forced_interrupt = False
+
+    for line in _startup_target_lines(config):
+        LOG.info(line)
 
     def _stop(_signum=None, _frame=None) -> None:
         nonlocal interrupt_count

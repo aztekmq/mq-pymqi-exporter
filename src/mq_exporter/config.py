@@ -53,8 +53,12 @@ class MetricsConfig:
     include_queue_manager: bool = True
     include_queues: bool = True
     include_channels: bool = False
+    include_accounting: bool = False
+    include_activity_trace: bool = False
     queue_patterns: tuple[str, ...] = ("*",)
     channel_patterns: tuple[str, ...] = ()
+    accounting_queue_name: str = "SYSTEM.ADMIN.ACCOUNTING.QUEUE"
+    activity_trace_queue_name: str = "SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE"
 
 
 @dataclass(frozen=True)
@@ -147,8 +151,12 @@ def load_exporter_config(path: str | Path) -> ExporterConfig:
             include_queue_manager=bool(metrics_raw.get("include_queue_manager", True)),
             include_queues=bool(metrics_raw.get("include_queues", True)),
             include_channels=bool(metrics_raw.get("include_channels", False)),
+            include_accounting=bool(metrics_raw.get("include_accounting", False)),
+            include_activity_trace=bool(metrics_raw.get("include_activity_trace", False)),
             queue_patterns=tuple(metrics_raw.get("queue_patterns", ["*"])),
             channel_patterns=tuple(metrics_raw.get("channel_patterns", [])),
+            accounting_queue_name=str(metrics_raw.get("accounting_queue_name", "SYSTEM.ADMIN.ACCOUNTING.QUEUE")),
+            activity_trace_queue_name=str(metrics_raw.get("activity_trace_queue_name", "SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE")),
         )
         qmgrs.append(
             QueueManagerConfig(

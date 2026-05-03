@@ -6,7 +6,7 @@ import unittest
 
 sys.modules.setdefault(
     "prometheus_client",
-    types.SimpleNamespace(CollectorRegistry=object, Counter=object, Gauge=object),
+    types.SimpleNamespace(CollectorRegistry=object, Counter=object, Gauge=object, make_wsgi_app=lambda _registry: object()),
 )
 
 from mq_exporter.config import (
@@ -52,6 +52,31 @@ class _RaisingCollector:
 
 
 class MQCollectorTests(unittest.TestCase):
+    def _collector_with_admin_pcf(self, unpacked):
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector.pymqi = types.SimpleNamespace(
+            MQMIError=_FakeMQMIError,
+            CMQC=types.SimpleNamespace(
+                MQOT_Q=1,
+                MQRC_UNKNOWN_OBJECT_NAME=2085,
+            ),
+            CMQCFC=types.SimpleNamespace(
+                MQGACF_Q_ACCOUNTING_DATA=8010,
+                MQGACF_ACTIVITY=8005,
+                MQCACF_APPL_NAME=3024,
+                MQCACF_OBJECT_NAME=3046,
+                MQIACF_OBJECT_TYPE=1016,
+                MQIAMO_PUTS=735,
+                MQIAMO_GETS=722,
+                MQIAMO64_PUT_BYTES=748,
+                MQIACF_OPERATION_TYPE=1240,
+                MQIACF_OPERATION_ID=1356,
+                MQOPER_GET=3,
+            ),
+            PCFExecute=types.SimpleNamespace(unpack=lambda _payload: (unpacked, object())),
+        )
+        return collector
+
     def test_unknown_queue_name_is_included_in_error_message(self) -> None:
         collector = PyMQICollector.__new__(PyMQICollector)
         collector.pymqi = types.SimpleNamespace(
@@ -85,6 +110,72 @@ class MQCollectorTests(unittest.TestCase):
         self.assertIn("queue='APP.INPUT.QUEUE'", message)
         self.assertIn("reason=2085 (MQRC_UNKNOWN_OBJECT_NAME)", message)
         self.assertIn("The requested queue name 'APP.INPUT.QUEUE' is unknown", message)
+
+    def test_accounting_message_generates_app_object_metrics(self) -> None:
+        collector = self._collector_with_admin_pcf(
+            {
+                8010: [
+                    {
+                        3024: b"amqsputc",
+                        3046: b"APP.REQUEST",
+                        1016: 1,
+                        735: 5,
+                        722: 2,
+                        748: 120,
+                    }
+                ]
+            }
+        )
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+        )
+
+        records = collector._parse_accounting_message(config, "SYSTEM.ADMIN.ACCOUNTING.QUEUE", types.SimpleNamespace(PutApplName=b""), b"pcf")
+
+        by_name = {record.name: record for record in records}
+        self.assertEqual(by_name["ibmmq_accounting_puts"].labels["appl_name"], "amqsputc")
+        self.assertEqual(by_name["ibmmq_accounting_puts"].labels["object_name"], "APP.REQUEST")
+        self.assertEqual(by_name["ibmmq_accounting_puts"].labels["object_type"], "MQOT_Q")
+        self.assertEqual(by_name["ibmmq_accounting_puts"].value, 5.0)
+        self.assertEqual(by_name["ibmmq_accounting_gets"].value, 2.0)
+        self.assertEqual(by_name["ibmmq_accounting_put_bytes"].value, 120.0)
+
+    def test_activity_trace_message_generates_operation_metric(self) -> None:
+        collector = self._collector_with_admin_pcf(
+            {
+                8005: [
+                    {
+                        3024: b"amqsgetc",
+                        3046: b"APP.REQUEST",
+                        1016: 1,
+                        1240: 3,
+                        1356: 44,
+                    }
+                ]
+            }
+        )
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+        )
+
+        records = collector._parse_activity_trace_message(config, "SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE", types.SimpleNamespace(PutApplName=b""), b"pcf")
+
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record.name, "ibmmq_activity_operations")
+        self.assertEqual(record.labels["appl_name"], "amqsgetc")
+        self.assertEqual(record.labels["object_name"], "APP.REQUEST")
+        self.assertEqual(record.labels["operation"], "MQOPER_GET")
+        self.assertEqual(record.labels["operation_id"], "44")
+        self.assertEqual(record.value, 1.0)
 
 
 class SchedulerFailureTests(unittest.TestCase):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from .config import QueueManagerConfig
@@ -34,6 +35,29 @@ CHANNEL_SPECS = {
     "MQIACH_BYTES_SENT": _MetricSpec("ibmmq_channel_bytes_sent", "Bytes sent on the channel."),
     "MQIACH_BYTES_RCVD": _MetricSpec("ibmmq_channel_bytes_received", "Bytes received on the channel."),
 }
+
+ACCOUNTING_SPECS = {
+    "MQIAMO_PUTS": _MetricSpec("ibmmq_accounting_puts", "Puts observed in IBM MQ accounting messages during the last poll."),
+    "MQIAMO_GETS": _MetricSpec("ibmmq_accounting_gets", "Gets observed in IBM MQ accounting messages during the last poll."),
+    "MQIAMO_PUT1S": _MetricSpec("ibmmq_accounting_put1s", "Put1 operations observed in IBM MQ accounting messages during the last poll."),
+    "MQIAMO_BROWSES": _MetricSpec("ibmmq_accounting_browses", "Browse operations observed in IBM MQ accounting messages during the last poll."),
+    "MQIAMO_TOPIC_PUTS": _MetricSpec("ibmmq_accounting_topic_puts", "Topic puts observed in IBM MQ accounting messages during the last poll."),
+    "MQIAMO_SUBS_DUR": _MetricSpec("ibmmq_accounting_subscriptions_durable", "Durable subscriptions observed in IBM MQ accounting messages during the last poll."),
+    "MQIAMO_SUBS_NDUR": _MetricSpec("ibmmq_accounting_subscriptions_nondurable", "Non-durable subscriptions observed in IBM MQ accounting messages during the last poll."),
+    "MQIAMO64_GET_BYTES": _MetricSpec("ibmmq_accounting_get_bytes", "Bytes read as observed in IBM MQ accounting messages during the last poll."),
+    "MQIAMO64_PUT_BYTES": _MetricSpec("ibmmq_accounting_put_bytes", "Bytes written as observed in IBM MQ accounting messages during the last poll."),
+    "MQIAMO64_TOPIC_PUT_BYTES": _MetricSpec("ibmmq_accounting_topic_put_bytes", "Topic put bytes observed in IBM MQ accounting messages during the last poll."),
+}
+
+ADMIN_QUEUE_MESSAGE_SPECS = {
+    "accounting": _MetricSpec("ibmmq_accounting_messages_consumed", "Accounting messages consumed from the accounting queue during the last poll."),
+    "activity_trace": _MetricSpec("ibmmq_activity_trace_messages_consumed", "Activity trace messages consumed from the activity trace queue during the last poll."),
+}
+
+ACTIVITY_OPERATION_SPEC = _MetricSpec(
+    "ibmmq_activity_operations",
+    "IBM MQ activity operations consumed from the activity trace queue during the last poll.",
+)
 
 
 @dataclass(frozen=True)
@@ -69,6 +93,10 @@ class PyMQICollector:
                 records.extend(self._collect_queue_metrics(config, pcf))
             if config.metrics.include_channels:
                 records.extend(self._collect_channel_metrics(config, pcf))
+            if config.metrics.include_accounting:
+                records.extend(self._collect_accounting_metrics(config, qmgr))
+            if config.metrics.include_activity_trace:
+                records.extend(self._collect_activity_trace_metrics(config, qmgr))
             return records
         finally:
             try:
@@ -192,6 +220,241 @@ class PyMQICollector:
                         )
                     )
         return records
+
+    def _collect_accounting_metrics(self, config: QueueManagerConfig, qmgr) -> list[MetricRecord]:
+        return self._collect_admin_queue_metrics(
+            config,
+            qmgr,
+            queue_name=config.metrics.accounting_queue_name,
+            source_name="accounting",
+            parser=self._parse_accounting_message,
+        )
+
+    def _collect_activity_trace_metrics(self, config: QueueManagerConfig, qmgr) -> list[MetricRecord]:
+        return self._collect_admin_queue_metrics(
+            config,
+            qmgr,
+            queue_name=config.metrics.activity_trace_queue_name,
+            source_name="activity_trace",
+            parser=self._parse_activity_trace_message,
+        )
+
+    def _collect_admin_queue_metrics(self, config: QueueManagerConfig, qmgr, *, queue_name: str, source_name: str, parser) -> list[MetricRecord]:
+        queue = None
+        drained = 0
+        records: list[MetricRecord] = []
+        try:
+            queue = self._open_input_queue(qmgr, config, queue_name)
+            for md, payload in self._drain_queue(queue, config, queue_name):
+                drained += 1
+                records.extend(parser(config, queue_name, md, payload))
+        finally:
+            if queue is not None:
+                try:
+                    queue.close()
+                except Exception:
+                    LOG.debug("Close failed for %s on %s", queue_name, config.name, exc_info=True)
+
+        records.append(
+            MetricRecord(
+                name=ADMIN_QUEUE_MESSAGE_SPECS[source_name].metric_name,
+                documentation=ADMIN_QUEUE_MESSAGE_SPECS[source_name].help_text,
+                labels={"qmgr": config.name, "queue": queue_name},
+                value=float(drained),
+            )
+        )
+        return records
+
+    def _open_input_queue(self, qmgr, config: QueueManagerConfig, queue_name: str):
+        options = (
+            getattr(self.pymqi.CMQC, "MQOO_INPUT_SHARED", 0)
+            | getattr(self.pymqi.CMQC, "MQOO_FAIL_IF_QUIESCING", 0)
+        )
+        try:
+            return self.pymqi.Queue(qmgr, queue_name, options)
+        except self.pymqi.MQMIError as exc:
+            raise self._build_mq_error(
+                config,
+                exc,
+                operation="open input queue",
+                object_type="queue",
+                object_name=queue_name,
+            ) from exc
+
+    def _drain_queue(self, queue, config: QueueManagerConfig, queue_name: str) -> Iterable[tuple[Any, bytes]]:
+        gmo = self.pymqi.GMO()
+        gmo.Options = (
+            getattr(self.pymqi.CMQC, "MQGMO_NO_WAIT", 0)
+            | getattr(self.pymqi.CMQC, "MQGMO_FAIL_IF_QUIESCING", 0)
+            | getattr(self.pymqi.CMQC, "MQGMO_CONVERT", 0)
+        )
+        while True:
+            md = self.pymqi.MD()
+            try:
+                payload = queue.get(None, md, gmo)
+            except self.pymqi.MQMIError as exc:
+                if getattr(exc, "reason", None) == getattr(self.pymqi.CMQC, "MQRC_NO_MSG_AVAILABLE", 2033):
+                    return
+                raise self._build_mq_error(
+                    config,
+                    exc,
+                    operation="drain queue",
+                    object_type="queue",
+                    object_name=queue_name,
+                ) from exc
+            yield md, payload
+
+    def _parse_accounting_message(self, config: QueueManagerConfig, queue_name: str, md, payload: bytes) -> list[MetricRecord]:
+        unpacked = self._unpack_pcf_message(config, queue_name, payload, operation="parse accounting message")
+        groups = self._find_group_dicts(unpacked, self._cmqcfc_value("MQGACF_Q_ACCOUNTING_DATA"))
+        records: list[MetricRecord] = []
+        for group in groups:
+            labels = self._message_labels(config, queue_name, md, group)
+            for attr_name, spec in ACCOUNTING_SPECS.items():
+                attr_id = self._cmqcfc_value(attr_name)
+                if attr_id is None or attr_id not in group:
+                    continue
+                value = self._coerce_numeric(group[attr_id])
+                if value is None:
+                    continue
+                records.append(
+                    MetricRecord(
+                        name=spec.metric_name,
+                        documentation=spec.help_text,
+                        labels=labels,
+                        value=value,
+                    )
+                )
+        return records
+
+    def _parse_activity_trace_message(self, config: QueueManagerConfig, queue_name: str, md, payload: bytes) -> list[MetricRecord]:
+        unpacked = self._unpack_pcf_message(config, queue_name, payload, operation="parse activity trace message")
+        activity_group_id = self._cmqcfc_value("MQGACF_ACTIVITY")
+        groups = self._find_group_dicts(unpacked, activity_group_id)
+        if not groups and isinstance(unpacked, dict):
+            groups = [unpacked]
+        records: list[MetricRecord] = []
+        operation_type_id = self._cmqcfc_value("MQIACF_OPERATION_TYPE")
+        operation_id_id = self._cmqcfc_value("MQIACF_OPERATION_ID")
+        for group in groups:
+            labels = self._message_labels(config, queue_name, md, group)
+            if operation_type_id is not None and operation_type_id in group:
+                labels["operation"] = self._operation_name(group[operation_type_id])
+            if operation_id_id is not None and operation_id_id in group:
+                labels["operation_id"] = str(group[operation_id_id])
+            records.append(
+                MetricRecord(
+                    name=ACTIVITY_OPERATION_SPEC.metric_name,
+                    documentation=ACTIVITY_OPERATION_SPEC.help_text,
+                    labels=labels,
+                    value=1.0,
+                )
+            )
+        return records
+
+    def _unpack_pcf_message(self, config: QueueManagerConfig, queue_name: str, payload: bytes, *, operation: str) -> dict[Any, Any]:
+        try:
+            unpacked, _cfh = self.pymqi.PCFExecute.unpack(payload)
+        except Exception as exc:
+            raise MQCollectionError(
+                message=(
+                    f"IBM MQ operation {operation} failed for {config.name}; "
+                    f"queue={queue_name!r}. Unable to decode PCF payload from the admin queue."
+                ),
+                operation=operation,
+                object_type="queue",
+                object_name=queue_name,
+            ) from exc
+        if not isinstance(unpacked, dict):
+            raise MQCollectionError(
+                message=(
+                    f"IBM MQ operation {operation} failed for {config.name}; "
+                    f"queue={queue_name!r}. PCF payload was not decoded into a dictionary."
+                ),
+                operation=operation,
+                object_type="queue",
+                object_name=queue_name,
+            )
+        return unpacked
+
+    def _find_group_dicts(self, data: Any, group_id: int | None) -> list[dict[Any, Any]]:
+        matches: list[dict[Any, Any]] = []
+        if isinstance(data, dict):
+            if group_id is not None:
+                group_value = data.get(group_id)
+                if isinstance(group_value, list):
+                    for item in group_value:
+                        if isinstance(item, dict):
+                            matches.append(item)
+            for value in data.values():
+                matches.extend(self._find_group_dicts(value, group_id))
+        elif isinstance(data, list):
+            for item in data:
+                matches.extend(self._find_group_dicts(item, group_id))
+        return matches
+
+    def _message_labels(self, config: QueueManagerConfig, queue_name: str, md, group: dict[Any, Any]) -> dict[str, str]:
+        appl_name = self._first_string(
+            group.get(self._cmqcfc_value("MQCACF_APPL_NAME")),
+            group.get(self._cmqcfc_value("MQCACF_EVENT_APPL_NAME")),
+            getattr(md, "PutApplName", b""),
+        )
+        object_name = self._first_string(
+            group.get(self._cmqcfc_value("MQCACF_OBJECT_NAME")),
+            group.get(self._cmqcfc_value("MQCACF_RESOLVED_Q_NAME")),
+            group.get(self._cmqcfc_value("MQCACF_TO_Q_NAME")),
+            group.get(self._cmqcfc_value("MQCACF_FROM_Q_NAME")),
+            group.get(self._cmqcfc_value("MQCACF_OBJECT_STRING")),
+            group.get(self._cmqcfc_value("MQCACF_RESOLVED_OBJECT_STRING")),
+            group.get(self._cmqcfc_value("MQCACF_TOPIC")),
+            group.get(self._cmqcfc_value("MQCACF_TO_TOPIC_NAME")),
+            group.get(self._cmqcfc_value("MQCACF_FROM_TOPIC_NAME")),
+        )
+        object_type = self._object_type_name(group.get(self._cmqcfc_value("MQIACF_OBJECT_TYPE")))
+        labels = {
+            "qmgr": config.name,
+            "queue": queue_name,
+            "appl_name": appl_name or "<unknown>",
+            "object_name": object_name or "<unknown>",
+            "object_type": object_type,
+        }
+        return labels
+
+    def _cmqcfc_value(self, attr_name: str) -> int | None:
+        return getattr(self.pymqi.CMQCFC, attr_name, None)
+
+    def _object_type_name(self, value: Any) -> str:
+        if isinstance(value, int):
+            for attr_name in dir(self.pymqi.CMQC):
+                if not attr_name.startswith("MQOT_"):
+                    continue
+                if getattr(self.pymqi.CMQC, attr_name, None) == value:
+                    return attr_name
+            return str(value)
+        return "<unknown>"
+
+    def _operation_name(self, value: Any) -> str:
+        if isinstance(value, int):
+            for attr_name in dir(self.pymqi.CMQCFC):
+                if not attr_name.startswith("MQOPER_"):
+                    continue
+                if getattr(self.pymqi.CMQCFC, attr_name, None) == value:
+                    return attr_name
+            return str(value)
+        return "<unknown>"
+
+    @staticmethod
+    def _first_string(*values: Any) -> str:
+        for value in values:
+            if isinstance(value, bytes):
+                text = value.decode("utf-8", errors="ignore").strip(" \x00")
+                if text:
+                    return text
+            elif isinstance(value, str):
+                text = value.strip(" \x00")
+                if text:
+                    return text
+        return ""
 
     @staticmethod
     def _coerce_numeric(value: Any) -> float | None:

@@ -43,6 +43,9 @@ class ConfigTests(unittest.TestCase):
                   queue_manager: QM1
                   channel: DEV.APP.SVRCONN
                   conn_name: localhost(1415)
+                metrics:
+                  include_accounting: true
+                  include_activity_trace: true
                 """
             ).strip(),
             encoding="utf-8",
@@ -54,6 +57,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.worker_pool.max_threads, 50)
         self.assertEqual(len(config.queue_managers), 1)
         self.assertEqual(config.queue_managers[0].poll_interval_seconds, 15.0)
+        self.assertTrue(config.queue_managers[0].metrics.include_accounting)
+        self.assertTrue(config.queue_managers[0].metrics.include_activity_trace)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,35 @@ class _FakeLifecycle:
 
 
 class MainTests(unittest.TestCase):
+    def test_startup_target_lines_include_pcf_and_admin_objects(self) -> None:
+        qmgr = types.SimpleNamespace(
+            name="QM1",
+            connection=types.SimpleNamespace(
+                queue_manager="QM1",
+                channel="DEV.APP.SVRCONN",
+                conn_name="localhost(1415)",
+                user="app",
+            ),
+            metrics=types.SimpleNamespace(
+                include_queue_manager=True,
+                include_queues=True,
+                include_channels=True,
+                include_accounting=True,
+                include_activity_trace=True,
+                accounting_queue_name="SYSTEM.ADMIN.ACCOUNTING.QUEUE",
+                activity_trace_queue_name="SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE",
+                queue_patterns=("APP.*",),
+                channel_patterns=("DEV.*",),
+            ),
+        )
+        config = types.SimpleNamespace(queue_managers=(qmgr,))
+
+        lines = main_module._startup_target_lines(config)
+
+        self.assertTrue(any("PCF command queue: SYSTEM.ADMIN.COMMAND.QUEUE" in line for line in lines))
+        self.assertTrue(any("SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE" in line for line in lines))
+        self.assertTrue(any("Collector mode: pyMQI PCF polling plus admin queue draining." in line for line in lines))
+
     def test_keyboard_interrupt_stops_services_and_returns_130(self) -> None:
         config = types.SimpleNamespace(
             logging=types.SimpleNamespace(level="INFO"),
