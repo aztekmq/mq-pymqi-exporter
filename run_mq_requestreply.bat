@@ -55,28 +55,20 @@ if "%MQ_PASSWORD%"=="" (
 )
 if "%MQ_REQUEST_MESSAGE%"=="" set "MQ_REQUEST_MESSAGE=ping"
 if "%MQ_WAIT_TIMEOUT_MS%"=="" set "MQ_WAIT_TIMEOUT_MS=30000"
-if "%MQ_REQUEST_QUEUE%"=="" set "MQ_REQUEST_QUEUE=APP.REQUEST"
-if "%MQ_REPLY_QUEUE%"=="" set "MQ_REPLY_QUEUE=APP.REQUEST"
+if "%MQ_QUEUE%"=="" set "MQ_QUEUE=APP.REQUEST"
 
-if "%MQ_REQUEST_QUEUE%"=="" (
-    echo [ERROR] MQ_REQUEST_QUEUE is not set.
-    echo [ERROR] Example: set MQ_REQUEST_QUEUE=APP.REQUEST
+if "%MQ_QUEUE%"=="" (
+    echo [ERROR] MQ_QUEUE is not set.
+    echo [ERROR] Example: set MQ_QUEUE=APP.REQUEST
     exit /b 1
 )
 
-if "%MQ_REPLY_QUEUE%"=="" (
-    echo [ERROR] MQ_REPLY_QUEUE is not set.
-    echo [ERROR] Example: set MQ_REPLY_QUEUE=APP.REPLY
-    exit /b 1
-)
-
-echo [INFO] Starting MQ request/reply utility with:
+echo [INFO] Starting MQ same-queue put/get utility with:
 echo [INFO]   queue manager: %MQ_QMGR%
 echo [INFO]   conn_name: %MQ_CONN_NAME%
 echo [INFO]   channel: %MQ_CHANNEL%
 echo [INFO]   user: %MQ_USER%
-echo [INFO]   request queue: %MQ_REQUEST_QUEUE%
-echo [INFO]   reply queue: %MQ_REPLY_QUEUE%
+echo [INFO]   queue: %MQ_QUEUE%
 echo [INFO]   wait timeout ms: %MQ_WAIT_TIMEOUT_MS%
 echo.
 
