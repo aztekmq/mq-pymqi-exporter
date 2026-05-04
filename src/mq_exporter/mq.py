@@ -20,6 +20,13 @@ class _MetricSpec:
     help_text: str
 
 
+@dataclass(frozen=True)
+class _DescriptorMetricSpec:
+    metric_name: str
+    help_text: str
+    preferred_selectors: tuple[str, ...] = ()
+
+
 @dataclass
 class _CollectorSession:
     qmgr: Any
@@ -129,6 +136,22 @@ _MICROSECOND_SELECTORS = {
     "MQIAMO_AVG_Q_TIME",
 }
 
+_SYSTEM_TOPIC_METADATA_SELECTORS = {
+    "MQIAMO_MONITOR_CLASS",
+    "MQIAMO_MONITOR_TYPE",
+    "MQIAMO_MONITOR_UNIT",
+    "MQIAMO_MONITOR_DATATYPE",
+    "MQIAMO_MONITOR_ELEMENT",
+    "MQIAMO_MONITOR_FLAGS",
+    "MQIAMO_MONITOR_DELTA",
+    "MQIAMO_MONITOR_GB",
+    "MQIAMO_MONITOR_MB",
+    "MQIAMO_MONITOR_KB",
+    "MQIAMO_MONITOR_HUNDREDTHS",
+    "MQIAMO_MONITOR_MICROSEC",
+    "MQIACF_OBJECT_TYPE",
+}
+
 _EXPLICIT_SYSTEM_TOPIC_METRICS: dict[tuple[str, str], _MetricSpec] = {
     ("STATQ", "MQIAMO_OPENS"): _MetricSpec("ibmmq_statq_mqopen_total", "Interval total MQOPEN calls against the queue during the published monitoring interval."),
     ("STATQ", "MQIAMO_CLOSES"): _MetricSpec("ibmmq_statq_mqclose_total", "Interval total MQCLOSE calls against the queue during the published monitoring interval."),
@@ -228,12 +251,209 @@ _EXPLICIT_SYSTEM_TOPIC_METRICS: dict[tuple[str, str], _MetricSpec] = {
     ("STATAPP", "MQIAMO64_TOPIC_PUT_BYTES"): _MetricSpec("ibmmq_statapp_topic_put_bytes_total", "Interval total topic publish bytes attributed to the application during the published monitoring interval."),
     ("STATAPP", "MQIAMO64_MONITOR_INTERVAL"): _MetricSpec("ibmmq_statapp_monitor_interval_seconds", "Length of the STATAPP published monitoring interval in seconds."),
 
-    ("CPU", "MQIAMO_MONITOR_PERCENT"): _MetricSpec("ibmmq_cpu_percentage_current", "CPU percentage-style value captured from the system-topic publication."),
-    ("CPU", "MQIAMO64_BYTES"): _MetricSpec("ibmmq_cpu_bytes_current", "CPU or memory byte-style value captured from the system-topic publication."),
     ("CPU", "MQIAMO64_MONITOR_INTERVAL"): _MetricSpec("ibmmq_cpu_monitor_interval_seconds", "Length of the CPU published monitoring interval in seconds."),
-    ("DISK", "MQIAMO_MONITOR_PERCENT"): _MetricSpec("ibmmq_disk_percentage_current", "Disk percentage-style value captured from the system-topic publication."),
-    ("DISK", "MQIAMO64_BYTES"): _MetricSpec("ibmmq_disk_bytes_current", "Disk byte-style value captured from the system-topic publication."),
     ("DISK", "MQIAMO64_MONITOR_INTERVAL"): _MetricSpec("ibmmq_disk_monitor_interval_seconds", "Length of the DISK published monitoring interval in seconds."),
+}
+
+_DESCRIPTOR_SYSTEM_TOPIC_METRICS: dict[tuple[str, str], _DescriptorMetricSpec] = {
+    ("STATQ", "open browse count"): _DescriptorMetricSpec(
+        "ibmmq_statq_open_browse_handles_current",
+        "Open browse handle count captured at the end of the published monitoring interval.",
+    ),
+    ("STATQ", "open publish count"): _DescriptorMetricSpec(
+        "ibmmq_statq_open_publish_handles_current",
+        "Open publish handle count captured at the end of the published monitoring interval.",
+    ),
+    ("STATQ", "seek get count"): _DescriptorMetricSpec(
+        "ibmmq_statq_get_search_total",
+        "Interval total MQGET searches performed on the queue during the published monitoring interval.",
+    ),
+    ("STATQ", "msg not found count"): _DescriptorMetricSpec(
+        "ibmmq_statq_get_search_not_found_total",
+        "Interval total MQGET searches that did not find a message during the published monitoring interval.",
+    ),
+    ("STATQ", "msg examine count"): _DescriptorMetricSpec(
+        "ibmmq_statq_get_search_examined_total",
+        "Interval total messages examined by MQGET searches during the published monitoring interval.",
+    ),
+    ("STATQ", "intran get skipped count"): _DescriptorMetricSpec(
+        "ibmmq_statq_get_search_in_transaction_skipped_total",
+        "Interval total messages skipped by MQGET searches because they were locked by an uncommitted get.",
+    ),
+    ("STATQ", "put skipped count"): _DescriptorMetricSpec(
+        "ibmmq_statq_get_search_uncommitted_put_skipped_total",
+        "Interval total messages skipped by MQGET searches because they were put in an uncommitted transaction.",
+    ),
+    ("STATQ", "selection mismatch count"): _DescriptorMetricSpec(
+        "ibmmq_statq_get_search_selection_mismatch_total",
+        "Interval total messages rejected by selector mismatch during MQGET searches.",
+    ),
+    ("STATQ", "correlid mismatch short count"): _DescriptorMetricSpec(
+        "ibmmq_statq_get_search_correlid_hash_mismatch_total",
+        "Interval total messages skipped by MQGET searches because the CorrelId quick hash did not match.",
+    ),
+    ("STATQ", "correlid mismatch long count"): _DescriptorMetricSpec(
+        "ibmmq_statq_get_search_correlid_full_mismatch_total",
+        "Interval total messages skipped by MQGET searches because the full CorrelId comparison did not match.",
+    ),
+    ("STATQ", "msgid mismatch count"): _DescriptorMetricSpec(
+        "ibmmq_statq_get_search_msgid_mismatch_total",
+        "Interval total messages skipped by MQGET searches because MsgId did not match.",
+    ),
+    ("STATQ", "load msg dtl count"): _DescriptorMetricSpec(
+        "ibmmq_statq_get_search_load_message_detail_total",
+        "Interval total message records loaded from queue storage to complete MQGET match evaluation.",
+    ),
+
+    ("CPU", "user cpu time percentage"): _DescriptorMetricSpec(
+        "ibmmq_cpu_user_time_percentage",
+        "Average user CPU time percentage for the platform over the published monitoring interval.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("CPU", "system cpu time percentage"): _DescriptorMetricSpec(
+        "ibmmq_cpu_system_time_percentage",
+        "Average system CPU time percentage for the platform over the published monitoring interval.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("CPU", "cpu load one minute average"): _DescriptorMetricSpec(
+        "ibmmq_cpu_load_one_minute_average",
+        "One-minute CPU load average for the platform.",
+    ),
+    ("CPU", "cpu load five minute average"): _DescriptorMetricSpec(
+        "ibmmq_cpu_load_five_minute_average",
+        "Five-minute CPU load average for the platform.",
+    ),
+    ("CPU", "cpu load fifteen minute average"): _DescriptorMetricSpec(
+        "ibmmq_cpu_load_fifteen_minute_average",
+        "Fifteen-minute CPU load average for the platform.",
+    ),
+    ("CPU", "ram free percentage"): _DescriptorMetricSpec(
+        "ibmmq_cpu_ram_free_percentage",
+        "Current free RAM percentage for the platform.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("CPU", "ram total bytes"): _DescriptorMetricSpec(
+        "ibmmq_cpu_ram_total_bytes",
+        "Current total RAM bytes for the platform.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("CPU", "user cpu time percentage estimate for queue manager"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_cpu_user_time_percentage",
+        "Average user CPU time percentage estimate for the queue manager over the published monitoring interval.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("CPU", "system cpu time percentage estimate for queue manager"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_cpu_system_time_percentage",
+        "Average system CPU time percentage estimate for the queue manager over the published monitoring interval.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("CPU", "ram total bytes estimate for queue manager"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_ram_total_bytes",
+        "Current RAM bytes estimate for the queue manager.",
+        ("MQIAMO64_BYTES",),
+    ),
+
+    ("DISK", "mq errors file system bytes in use"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_errors_file_system_in_use_bytes",
+        "Current MQ errors file system bytes in use.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "mq errors file system free space"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_errors_file_system_free_space_percentage",
+        "Current MQ errors file system free space percentage.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("DISK", "mq fdc file count"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_fdc_file_count",
+        "Current number of MQ FDC files.",
+    ),
+    ("DISK", "mq trace file system bytes in use"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_trace_file_system_in_use_bytes",
+        "Current MQ trace file system bytes in use.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "mq trace file system free space"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_trace_file_system_free_space_percentage",
+        "Current MQ trace file system free space percentage.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("DISK", "queue manager file system bytes in use"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_file_system_in_use_bytes",
+        "Current queue manager file system bytes in use.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "queue manager file system free space"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_file_system_free_space_percentage",
+        "Current queue manager file system free space percentage.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("DISK", "log bytes in use"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_in_use_bytes",
+        "Current log bytes in use.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "log bytes max"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_max_bytes",
+        "Current maximum writable log bytes.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "log file system bytes in use"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_file_system_in_use_bytes",
+        "Current log file system bytes in use.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "log file system bytes max"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_file_system_max_bytes",
+        "Current log file system maximum bytes.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "log file system free space"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_file_system_free_space_percentage",
+        "Current log file system free space percentage.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("DISK", "log disk written log sequence number"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_disk_written_lsn",
+        "Current log sequence number written and forced to disk.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "log physical bytes written for the current interval"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_physical_bytes_written_total",
+        "Interval total physical log bytes written during the published monitoring interval.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "log logical bytes written for the current interval"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_logical_bytes_written_total",
+        "Interval total logical log bytes written during the published monitoring interval.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "log write latency"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_write_latency_seconds",
+        "Rolling average log write latency in seconds.",
+    ),
+    ("DISK", "log write size"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_write_size_bytes",
+        "Rolling average log write size in bytes.",
+        ("MQIAMO64_BYTES",),
+    ),
+    ("DISK", "log current primary space in use"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_current_primary_space_in_use_percentage",
+        "Current log primary space in use percentage.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("DISK", "log workload primary space utilization"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_workload_primary_space_utilization_percentage",
+        "Rolling average log workload primary space utilization percentage.",
+        ("MQIAMO_MONITOR_PERCENT",),
+    ),
+    ("DISK", "log slowest write since restart"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_slowest_write_seconds",
+        "Slowest individual log write since restart, in seconds.",
+    ),
+    ("DISK", "log timestamp of slowest write"): _DescriptorMetricSpec(
+        "ibmmq_qmgr_log_slowest_write_timestamp_seconds",
+        "Unix timestamp of the slowest individual log write since restart, in seconds.",
+    ),
 }
 
 
@@ -922,6 +1142,16 @@ class PyMQICollector:
         if isinstance(data, dict):
             labels = self._system_topic_metric_labels(topic_labels, data, context)
             monitor_class = topic_labels["monitor_class"]
+            descriptor_spec, descriptor_value = self._descriptor_metric_match(monitor_class, labels.get("monitor_desc", "<none>"), data)
+            if descriptor_spec is not None and descriptor_value is not None:
+                records.append(
+                    MetricRecord(
+                        name=descriptor_spec.metric_name,
+                        documentation=descriptor_spec.help_text,
+                        labels=labels,
+                        value=self._scale_descriptor_system_topic_value(descriptor_spec.metric_name, descriptor_value),
+                    )
+                )
             for key, value in data.items():
                 selector_name = self._selector_name(key)
                 numeric_value = self._coerce_numeric(value)
@@ -987,11 +1217,68 @@ class PyMQICollector:
             "monitor_type_desc": self._first_string(data.get(self._cmqcfc_value("MQCAMO_MONITOR_TYPE"))) or "<none>",
         }
 
+    def _descriptor_metric_match(
+        self,
+        monitor_class: str,
+        monitor_desc: str,
+        data: dict[Any, Any],
+    ) -> tuple[_DescriptorMetricSpec | None, float | None]:
+        desc_key = self._normalize_monitor_descriptor(monitor_desc)
+        spec = _DESCRIPTOR_SYSTEM_TOPIC_METRICS.get((monitor_class, desc_key))
+        if spec is None:
+            return None, None
+        if spec.preferred_selectors:
+            for selector_name in spec.preferred_selectors:
+                selector_value = self._selector_value_by_name(data, selector_name)
+                if selector_value is not None:
+                    return spec, selector_value
+        return spec, self._first_non_metadata_numeric_value(data)
+
+    def _selector_value_by_name(self, data: dict[Any, Any], selector_name: str) -> float | None:
+        for key, value in data.items():
+            if self._selector_name(key) != selector_name:
+                continue
+            return self._coerce_numeric(value)
+        return None
+
+    def _first_non_metadata_numeric_value(self, data: dict[Any, Any]) -> float | None:
+        for key, value in data.items():
+            selector_name = self._selector_name(key)
+            if selector_name in _SYSTEM_TOPIC_METADATA_SELECTORS:
+                continue
+            if selector_name and selector_name.startswith("MQCACF_"):
+                continue
+            numeric_value = self._coerce_numeric(value)
+            if numeric_value is not None:
+                return numeric_value
+        return None
+
     @staticmethod
     def _scale_explicit_system_topic_value(selector_name: str | None, numeric_value: float) -> float:
         if selector_name in _MICROSECOND_SELECTORS:
             return numeric_value / 1_000_000.0
         return numeric_value
+
+    @staticmethod
+    def _scale_descriptor_system_topic_value(metric_name: str, numeric_value: float) -> float:
+        if metric_name.endswith("_seconds") or metric_name.endswith("_timestamp_seconds"):
+            return numeric_value / 1_000_000.0
+        return numeric_value
+
+    @staticmethod
+    def _normalize_monitor_descriptor(monitor_desc: str) -> str:
+        pieces: list[str] = []
+        current: list[str] = []
+        for char in monitor_desc.lower():
+            if char.isalnum():
+                current.append(char)
+                continue
+            if current:
+                pieces.append("".join(current))
+                current = []
+        if current:
+            pieces.append("".join(current))
+        return " ".join(pieces)
 
     def _monitor_discovery_records(self, topic_labels: dict[str, str]) -> list[MetricRecord]:
         discovery_labels = {

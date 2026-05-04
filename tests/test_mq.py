@@ -76,6 +76,14 @@ class _FakeCpuRFH2(_FakeRFH2):
         }
 
 
+class _FakeDiskRFH2(_FakeRFH2):
+    def unpack(self, _payload, _encoding=None) -> None:
+        self._values = {
+            "StrucLength": 8,
+            "mqps": b"<mqps><Top>$SYS/MQ/INFO/QMGR/QM1/Monitor/DISK/Log</Top></mqps>",
+        }
+
+
 class _FakeStore:
     def set_next_poll(self, _qmgr: str, _when: float) -> None:
         return None
@@ -127,6 +135,8 @@ class MQCollectorTests(unittest.TestCase):
                 MQIAMO_CONNS_FAILED=749,
                 MQIAMO_CBS=769,
                 MQIAMO_COMMITS=710,
+                MQIAMO_MSGS=728,
+                MQIAMO_MONITOR_PERCENT=10000,
                 MQIAMO_TOPIC_PUTS=779,
                 MQIAMO_Q_MAX_DEPTH=739,
                 MQIAMO_Q_MIN_DEPTH=740,
@@ -419,8 +429,8 @@ class MQCollectorTests(unittest.TestCase):
     def test_system_topic_publication_generates_curated_cpu_metrics(self) -> None:
         collector = self._collector_with_admin_pcf(
             {
-                746: 2048,
-                3065: b"RAM total bytes",
+                10000: 62,
+                3065: b"User CPU time percentage",
                 3066: b"SystemSummary",
             }
         )
@@ -439,10 +449,65 @@ class MQCollectorTests(unittest.TestCase):
             b"RFH bodypcf",
         )
 
-        cpu_metric = [record for record in records if record.name == "ibmmq_cpu_bytes_current"][0]
-        self.assertEqual(cpu_metric.value, 2048.0)
-        self.assertEqual(cpu_metric.labels["monitor_desc"], "RAM total bytes")
+        cpu_metric = [record for record in records if record.name == "ibmmq_cpu_user_time_percentage"][0]
+        self.assertEqual(cpu_metric.value, 62.0)
+        self.assertEqual(cpu_metric.labels["monitor_desc"], "User CPU time percentage")
         self.assertEqual(cpu_metric.labels["monitor_type_desc"], "SystemSummary")
+
+    def test_system_topic_publication_generates_statq_search_diagnostic_metrics(self) -> None:
+        collector = self._collector_with_admin_pcf(
+            {
+                728: 11,
+                3065: b"selection mismatch count",
+                3066: b"GET",
+                3046: b"APP.REQUEST",
+                1016: 1,
+            }
+        )
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+        )
+
+        records = collector._parse_system_topic_publication(
+            config,
+            types.SimpleNamespace(Format=b"MQHRF2  ", Encoding=273),
+            b"RFH bodypcf",
+        )
+
+        metric = [record for record in records if record.name == "ibmmq_statq_get_search_selection_mismatch_total"][0]
+        self.assertEqual(metric.value, 11.0)
+        self.assertEqual(metric.labels["object_name"], "APP.REQUEST")
+
+    def test_system_topic_publication_generates_curated_disk_metrics(self) -> None:
+        collector = self._collector_with_admin_pcf(
+            {
+                746: 9000000,
+                3065: b"Log physical bytes written for the current interval",
+                3066: b"Log",
+            }
+        )
+        collector.pymqi.RFH2 = _FakeDiskRFH2
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+        )
+
+        records = collector._parse_system_topic_publication(
+            config,
+            types.SimpleNamespace(Format=b"MQHRF2  ", Encoding=273),
+            b"RFH bodypcf",
+        )
+
+        metric = [record for record in records if record.name == "ibmmq_qmgr_log_physical_bytes_written_total"][0]
+        self.assertEqual(metric.value, 9000000.0)
+        self.assertEqual(metric.labels["monitor_branch"], "Log")
 
 
 class SchedulerFailureTests(unittest.TestCase):
