@@ -77,7 +77,7 @@ class MainTests(unittest.TestCase):
                 system_topic_root_topic="SYSTEM.ADMIN.TOPIC",
                 queue_patterns=("APP.*",),
                 topic_patterns=("SYSTEM.ADMIN.TOPIC",),
-                system_topic_subscription_patterns=("$SYS/MQ/INFO/QMGR/{qmgr}/#",),
+                system_topic_subscription_patterns=("$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/#",),
                 channel_patterns=("DEV.*",),
             ),
         )
@@ -88,7 +88,7 @@ class MainTests(unittest.TestCase):
         self.assertTrue(any("PCF command queue: SYSTEM.ADMIN.COMMAND.QUEUE" in line for line in lines))
         self.assertTrue(any("SYSTEM.ADMIN.STATISTICS.QUEUE" in line for line in lines))
         self.assertTrue(any("SYSTEM.ADMIN.TOPIC" in line for line in lines))
-        self.assertTrue(any("$SYS/MQ/INFO/QMGR/{qmgr}/#" in line for line in lines))
+        self.assertTrue(any("$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/#" in line for line in lines))
         self.assertTrue(any("SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE" in line for line in lines))
         self.assertTrue(any("Collector mode: pyMQI PCF polling plus admin queue draining." in line for line in lines))
 

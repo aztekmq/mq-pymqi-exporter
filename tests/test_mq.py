@@ -576,19 +576,26 @@ class MQCollectorTests(unittest.TestCase):
         self.assertEqual(metric.value, 9000000.0)
         self.assertEqual(metric.labels["monitor_branch"], "Log")
 
-    def test_resolve_subscription_topic_string_anchors_relative_pattern_to_root_topic(self) -> None:
-        value = PyMQICollector._resolve_subscription_topic_string(
-            "INFO/QMGR/QM1/#",
-            ("$SYS/MQ",),
+    def test_subscription_topic_for_monitor_type_replaces_object_placeholder_with_single_level_wildcard(self) -> None:
+        value = PyMQICollector._subscription_topic_for_monitor_type(
+            types.SimpleNamespace(publication_topic="$SYS/MQ/INFO/QMGR/QM1/Monitor/STATQ/Queue/%s/PUT")
         )
-        self.assertEqual(value, "$SYS/MQ/INFO/QMGR/QM1/#")
+        self.assertEqual(value, "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATQ/Queue/+/PUT")
 
-    def test_resolve_subscription_topic_string_auto_roots_legacy_info_pattern(self) -> None:
-        value = PyMQICollector._resolve_subscription_topic_string(
-            "INFO/QMGR/QM1/#",
-            (),
+    def test_resolved_system_topic_patterns_rewrite_illegal_qmgr_root_wildcard(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+            metrics=MetricsConfig(system_topic_subscription_patterns=("$SYS/MQ/INFO/QMGR/{qmgr}/#",)),
         )
-        self.assertEqual(value, "$SYS/MQ/INFO/QMGR/QM1/#")
+        self.assertEqual(
+            collector._resolved_system_topic_patterns(config),
+            ("$SYS/MQ/INFO/QMGR/QM1/Monitor/#",),
+        )
 
 
 class SchedulerFailureTests(unittest.TestCase):

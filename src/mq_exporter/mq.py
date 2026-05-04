@@ -33,6 +33,25 @@ class _CollectorSession:
     subscriptions: list[Any]
 
 
+@dataclass(frozen=True)
+class _DiscoveredMonitorClass:
+    class_id: int
+    class_name: str
+    metadata_topic: str
+    flags: int = 0
+
+
+@dataclass(frozen=True)
+class _DiscoveredMonitorType:
+    class_id: int
+    class_name: str
+    type_id: int
+    type_name: str
+    metadata_topic: str
+    publication_topic: str
+    flags: int = 0
+
+
 Q_MGR_SPECS = {
     "MQIA_PLATFORM": _MetricSpec("ibmmq_qmgr_platform", "Queue manager platform code."),
     "MQIA_COMMAND_LEVEL": _MetricSpec("ibmmq_qmgr_command_level", "Queue manager command level."),
@@ -579,21 +598,12 @@ class PyMQICollector:
             getattr(self.pymqi.CMQC, "MQSO_CREATE", 0)
             | getattr(self.pymqi.CMQC, "MQSO_NON_DURABLE", 0)
             | getattr(self.pymqi.CMQC, "MQSO_MANAGED", 0)
+            | getattr(self.pymqi.CMQC, "MQSO_FAIL_IF_QUIESCING", 0)
         )
-        root_topic = getattr(config.metrics, "system_topic_root_topic", "SYSTEM.ADMIN.TOPIC")
-        pcf = self.pymqi.PCFExecute(qmgr)
-        root_topic_strings = self._resolve_topic_status_strings(
-            config,
-            pcf,
-            root_topic,
-            getattr(self.pymqi.CMQC, "MQCA_TOPIC_NAME", None),
-            getattr(self.pymqi.CMQC, "MQCA_TOPIC_STRING", None),
-        )
-
-        for pattern in self._resolved_system_topic_patterns(config):
+        for pattern in self._discovered_system_topic_subscription_topics(config, qmgr):
             kwargs: dict[str, Any] = {
                 "sub_opts": sub_opts,
-                "topic_string": self._resolve_subscription_topic_string(pattern, root_topic_strings),
+                "topic_string": pattern,
             }
 
             try:
@@ -616,29 +626,129 @@ class PyMQICollector:
                 ) from exc
         return subscriptions
 
+    def _discovered_system_topic_subscription_topics(self, config: QueueManagerConfig, qmgr) -> tuple[str, ...]:
+        topics: list[str] = []
+        seen: set[str] = set()
+        for monitor_type in self._discover_monitor_types(config, qmgr):
+            topic_string = self._subscription_topic_for_monitor_type(monitor_type)
+            if not topic_string or topic_string in seen:
+                continue
+            seen.add(topic_string)
+            topics.append(topic_string)
+        return tuple(topics)
+
+    def _discover_monitor_types(self, config: QueueManagerConfig, qmgr) -> list[_DiscoveredMonitorType]:
+        qmgr_name = config.connection.queue_manager or config.name
+        metadata_root = f"$SYS/MQ/INFO/QMGR/{qmgr_name}/Monitor/METADATA/CLASSES"
+        monitor_classes = self._discover_monitor_classes(config, qmgr, metadata_root)
+        discovered: list[_DiscoveredMonitorType] = []
+        for monitor_class in monitor_classes:
+            discovered.extend(self._discover_monitor_types_for_class(config, qmgr, monitor_class))
+        return discovered
+
+    def _discover_monitor_classes(self, config: QueueManagerConfig, qmgr, metadata_topic: str) -> list[_DiscoveredMonitorClass]:
+        unpacked = self._get_system_topic_metadata_message(config, qmgr, metadata_topic)
+        groups = self._find_group_dicts(unpacked, self._cmqcfc_value("MQGACF_MONITOR_CLASS"))
+        discovered: list[_DiscoveredMonitorClass] = []
+        for group in groups:
+            class_id = group.get(self._cmqcfc_value("MQIAMO_MONITOR_CLASS"))
+            class_name = self._first_string(group.get(self._cmqcfc_value("MQCAMO_MONITOR_CLASS")))
+            next_topic = self._first_string(group.get(getattr(self.pymqi.CMQC, "MQCA_TOPIC_STRING", None)))
+            flags = int(self._coerce_numeric(group.get(self._cmqcfc_value("MQIAMO_MONITOR_FLAGS"))) or 0)
+            if not isinstance(class_id, int) or not class_name or not next_topic:
+                continue
+            discovered.append(
+                _DiscoveredMonitorClass(
+                    class_id=class_id,
+                    class_name=class_name,
+                    metadata_topic=next_topic,
+                    flags=flags,
+                )
+            )
+        return discovered
+
+    def _discover_monitor_types_for_class(self, config: QueueManagerConfig, qmgr, monitor_class: _DiscoveredMonitorClass) -> list[_DiscoveredMonitorType]:
+        unpacked = self._get_system_topic_metadata_message(config, qmgr, monitor_class.metadata_topic)
+        groups = self._find_group_dicts(unpacked, self._cmqcfc_value("MQGACF_MONITOR_TYPE"))
+        discovered: list[_DiscoveredMonitorType] = []
+        for group in groups:
+            type_id = group.get(self._cmqcfc_value("MQIAMO_MONITOR_TYPE"))
+            type_name = self._first_string(group.get(self._cmqcfc_value("MQCAMO_MONITOR_TYPE")))
+            metadata_topic = self._first_string(group.get(getattr(self.pymqi.CMQC, "MQCA_TOPIC_STRING", None)))
+            flags = int(self._coerce_numeric(group.get(self._cmqcfc_value("MQIAMO_MONITOR_FLAGS"))) or 0)
+            if not isinstance(type_id, int) or not type_name or not metadata_topic:
+                continue
+            publication_topic = self._discover_publication_topic_for_type(config, qmgr, metadata_topic)
+            if not publication_topic:
+                continue
+            discovered.append(
+                _DiscoveredMonitorType(
+                    class_id=monitor_class.class_id,
+                    class_name=monitor_class.class_name,
+                    type_id=type_id,
+                    type_name=type_name,
+                    metadata_topic=metadata_topic,
+                    publication_topic=publication_topic,
+                    flags=flags,
+                )
+            )
+        return discovered
+
+    def _discover_publication_topic_for_type(self, config: QueueManagerConfig, qmgr, metadata_topic: str) -> str:
+        unpacked = self._get_system_topic_metadata_message(config, qmgr, metadata_topic)
+        topic_string = self._first_string(
+            unpacked.get(getattr(self.pymqi.CMQC, "MQCA_TOPIC_STRING", None)) if isinstance(unpacked, dict) else None
+        )
+        if topic_string:
+            return topic_string
+        return ""
+
+    def _get_system_topic_metadata_message(self, config: QueueManagerConfig, qmgr, topic_string: str) -> dict[Any, Any]:
+        sub_opts = (
+            getattr(self.pymqi.CMQC, "MQSO_CREATE", 0)
+            | getattr(self.pymqi.CMQC, "MQSO_NON_DURABLE", 0)
+            | getattr(self.pymqi.CMQC, "MQSO_FAIL_IF_QUIESCING", 0)
+        )
+        subscription = None
+        queue = None
+        try:
+            subscription = self.pymqi.Subscription(qmgr)
+            subscription.sub(sub_opts=sub_opts, topic_string=topic_string)
+            queue = subscription.get_sub_queue()
+            if queue is None:
+                raise MQCollectionError(
+                    f"IBM MQ metadata subscription queue was not available for {config.name}; topic={topic_string!r}"
+                )
+            md, payload = self._get_one_message(queue, config, topic_string, wait_interval_ms=10000)
+            return self._unpack_pcf_message(config, topic_string, payload, operation="parse system topic metadata")
+        finally:
+            if subscription is not None:
+                try:
+                    subscription.close(close_sub_queue=True)
+                except Exception:
+                    LOG.debug("Metadata subscription close failed for %s topic %s", config.name, topic_string, exc_info=True)
+
     def _resolved_system_topic_patterns(self, config: QueueManagerConfig) -> tuple[str, ...]:
         resolved: list[str] = []
         for pattern in getattr(config.metrics, "system_topic_subscription_patterns", ()):
-            resolved.append(
-                pattern.format(
-                    qmgr=config.name,
-                    queue_manager=config.connection.queue_manager,
-                )
+            value = pattern.format(
+                qmgr=config.name,
+                queue_manager=config.connection.queue_manager,
             )
+            if value in {
+                f"INFO/QMGR/{config.name}/#",
+                f"$SYS/MQ/INFO/QMGR/{config.name}/#",
+            }:
+                value = f"$SYS/MQ/INFO/QMGR/{config.name}/Monitor/#"
+            resolved.append(value)
         return tuple(resolved)
 
     @staticmethod
-    def _resolve_subscription_topic_string(pattern: str, root_topic_strings: tuple[str, ...]) -> str:
-        if pattern.startswith("$SYS/"):
-            return pattern
-        if pattern.startswith("INFO/"):
-            return f"$SYS/MQ/{pattern}"
-        root = root_topic_strings[0] if root_topic_strings else ""
-        if not root:
-            raise MQCollectionError(
-                f"IBM MQ managed subscription topic string could not be resolved for pattern {pattern!r}; use a full $SYS/MQ/... topic string."
-            )
-        return f"{root.rstrip('/')}/{pattern.lstrip('/')}"
+    def _subscription_topic_for_monitor_type(monitor_type: _DiscoveredMonitorType) -> str:
+        topic_string = monitor_type.publication_topic
+        if "%s" in topic_string:
+            return topic_string.replace("%s", "+")
+        return topic_string
 
     def _collect_qmgr_metrics(self, config: QueueManagerConfig, pcf) -> list[MetricRecord]:
         records: list[MetricRecord] = []
@@ -950,6 +1060,30 @@ class PyMQICollector:
                 ) from exc
             drained += 1
             yield md, payload
+
+    def _get_one_message(self, queue, config: QueueManagerConfig, queue_name: str, *, wait_interval_ms: int) -> tuple[Any, bytes]:
+        gmo = self.pymqi.GMO()
+        gmo.Options = (
+            getattr(self.pymqi.CMQC, "MQGMO_WAIT", 0)
+            | getattr(self.pymqi.CMQC, "MQGMO_FAIL_IF_QUIESCING", 0)
+            | getattr(self.pymqi.CMQC, "MQGMO_CONVERT", 0)
+            | getattr(self.pymqi.CMQC, "MQGMO_NO_PROPERTIES", 0)
+        )
+        gmo.WaitInterval = wait_interval_ms
+        md = self.pymqi.MD()
+        md.Encoding = getattr(self.pymqi.CMQC, "MQENC_NATIVE", getattr(md, "Encoding", 0))
+        md.CodedCharSetId = getattr(self.pymqi.CMQC, "MQCCSI_Q_MGR", getattr(md, "CodedCharSetId", 0))
+        try:
+            payload = queue.get(None, md, gmo)
+        except self.pymqi.MQMIError as exc:
+            raise self._build_mq_error(
+                config,
+                exc,
+                operation="get retained metadata publication",
+                object_type="topic",
+                object_name=queue_name,
+            ) from exc
+        return md, payload
 
     def _parse_accounting_message(self, config: QueueManagerConfig, queue_name: str, md, payload: bytes) -> list[MetricRecord]:
         unpacked = self._unpack_pcf_message(config, queue_name, payload, operation="parse accounting message")
