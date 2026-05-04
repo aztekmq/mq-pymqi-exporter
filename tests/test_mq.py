@@ -652,7 +652,22 @@ class MQCollectorTests(unittest.TestCase):
             metrics=MetricsConfig(system_topic_subscription_patterns=("$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATMQI/#",)),
         )
 
-        self.assertEqual(collector._discovered_system_topic_subscription_topics(config, object()), ())
+        self.assertEqual(
+            collector._discovered_system_topic_subscription_topics(config, object()),
+            (
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/CPU/QMgrSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/CPU/SystemSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/DISK/SystemSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/DISK/QMgrSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/DISK/Log",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/PUT",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/GET",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/BROWSE",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/PUT",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/GET",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/BROWSE",
+            ),
+        )
 
     def test_discovered_system_topic_subscription_topics_uses_explicit_non_wildcard_fallback_on_unstructured_2033(self) -> None:
         collector = PyMQICollector.__new__(PyMQICollector)
@@ -675,7 +690,50 @@ class MQCollectorTests(unittest.TestCase):
 
         self.assertEqual(
             collector._discovered_system_topic_subscription_topics(config, object()),
-            ("$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/PUT",),
+            (
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/CPU/QMgrSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/CPU/SystemSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/DISK/SystemSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/DISK/QMgrSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/DISK/Log",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/PUT",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/GET",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/BROWSE",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/PUT",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/GET",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/BROWSE",
+            ),
+        )
+
+    def test_amqsrua_style_direct_system_topic_patterns_include_exact_statq_queue_topics(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+            metrics=MetricsConfig(queue_patterns=("APP.REQUEST", "APP.*")),
+        )
+
+        self.assertEqual(
+            collector._amqsrua_style_direct_system_topic_patterns(config),
+            (
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/CPU/QMgrSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/CPU/SystemSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/DISK/SystemSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/DISK/QMgrSummary",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/DISK/Log",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/PUT",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/GET",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/BROWSE",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/PUT",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/GET",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/BROWSE",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATQ/APP.REQUEST/PUT",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATQ/APP.REQUEST/GET",
+                "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATQ/APP.REQUEST/BROWSE",
+            ),
         )
 
     def test_collect_retries_once_after_hconn_error(self) -> None:

@@ -12,7 +12,10 @@ DEFINE QLOCAL(APP.REQUEST) REPLACE
 DEFINE QALIAS(APP.REPLY) TARGET('APP.REQUEST') TARGTYPE(QUEUE) REPLACE
 
 * Define Server Conn Channel
-DEFINE CHANNEL(DEV.APP.SVRCONN) CHLTYPE(SVRCONN) TRPTYPE(TCP) REPLACE
+DEFINE CHANNEL(DEV.APP.SVRCONN) CHLTYPE(SVRCONN) TRPTYPE(TCP) MCAUSER('') REPLACE
+
+* Map anyone connecting through DEV.APP.SVRCONN to local user 'app'
+SET CHLAUTH(DEV.APP.SVRCONN) TYPE(ADDRESSMAP) ADDRESS('*') USERSRC(MAP) MCAUSER('app') DESCR('Map all client connections on DEV.APP.SVRCONN to app') ACTION(REPLACE)
 
 * Queue-manager level inquiry and display access for both the OS group and the
 * concrete client principal used by the exporter.

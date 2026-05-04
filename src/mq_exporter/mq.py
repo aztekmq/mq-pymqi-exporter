@@ -134,6 +134,19 @@ SYSTEM_TOPIC_PUBLICATION_BYTES_SPEC = _MetricSpec(
 )
 
 _SYSTEM_TOPIC_KNOWN_CLASSES = {"CPU", "DISK", "STATMQI", "STATQ", "STATAPP"}
+_DIRECT_SYSTEM_TOPIC_TYPES: tuple[tuple[str, str | None, str], ...] = (
+    ("CPU", None, "QMgrSummary"),
+    ("CPU", None, "SystemSummary"),
+    ("DISK", None, "SystemSummary"),
+    ("DISK", None, "QMgrSummary"),
+    ("DISK", None, "Log"),
+    ("STATMQI", None, "PUT"),
+    ("STATMQI", None, "GET"),
+    ("STATMQI", None, "BROWSE"),
+    ("STATAPP", None, "PUT"),
+    ("STATAPP", None, "GET"),
+    ("STATAPP", None, "BROWSE"),
+)
 _SYSTEM_TOPIC_SELECTOR_PREFIXES = (
     "MQIAMO64_",
     "MQIAMO_",
@@ -651,6 +664,11 @@ class PyMQICollector:
     def _discovered_system_topic_subscription_topics(self, config: QueueManagerConfig, qmgr) -> tuple[str, ...]:
         topics: list[str] = []
         seen: set[str] = set()
+        for topic_string in self._amqsrua_style_direct_system_topic_patterns(config):
+            if topic_string in seen:
+                continue
+            seen.add(topic_string)
+            topics.append(topic_string)
         no_msg_reason = getattr(self.pymqi.CMQC, "MQRC_NO_MSG_AVAILABLE", 2033)
         try:
             monitor_types = self._discover_monitor_types(config, qmgr)
@@ -664,6 +682,12 @@ class PyMQICollector:
             )
             if not no_retained_metadata:
                 raise
+            if topics:
+                LOG.warning(
+                    "System-topic metadata discovery did not yield retained publications for %s; continuing with direct amqsrua.py-style topic subscriptions.",
+                    config.name,
+                )
+                return tuple(topics)
             return self._metadata_discovery_fallback_topics(config)
 
         for monitor_type in monitor_types:
@@ -677,6 +701,13 @@ class PyMQICollector:
         return tuple(topics)
 
     def _metadata_discovery_fallback_topics(self, config: QueueManagerConfig) -> tuple[str, ...]:
+        direct_topics = self._amqsrua_style_direct_system_topic_patterns(config)
+        if direct_topics:
+            LOG.warning(
+                "System-topic metadata discovery did not yield retained publications for %s; using direct amqsrua.py-style topic subscriptions.",
+                config.name,
+            )
+            return direct_topics
         explicit_topics = self._configured_explicit_system_topic_patterns(config)
         if explicit_topics:
             LOG.warning(
@@ -767,7 +798,6 @@ class PyMQICollector:
         sub_opts = (
             getattr(self.pymqi.CMQC, "MQSO_CREATE", 0)
             | getattr(self.pymqi.CMQC, "MQSO_NON_DURABLE", 0)
-            | getattr(self.pymqi.CMQC, "MQSO_MANAGED", 0)
             | getattr(self.pymqi.CMQC, "MQSO_FAIL_IF_QUIESCING", 0)
         )
         subscription = None
@@ -779,9 +809,10 @@ class PyMQICollector:
                 topic_string=topic_string,
                 outcome="attempt",
             )
+            queue = self._open_model_subscription_queue(qmgr, config)
             subscription = self.pymqi.Subscription(qmgr)
             try:
-                subscription.sub(sub_opts=sub_opts, topic_string=topic_string)
+                subscription.sub(sub_queue=queue, sub_opts=sub_opts, topic_string=topic_string)
             except self.pymqi.MQMIError as exc:
                 error = self._build_mq_error(
                     config,
@@ -798,13 +829,13 @@ class PyMQICollector:
                     exc=error,
                 )
                 raise error from exc
-            queue = subscription.get_sub_queue()
-            if queue is None:
+            subscribed_queue = subscription.get_sub_queue()
+            if subscribed_queue is None:
                 raise MQCollectionError(
                     f"IBM MQ metadata subscription queue was not available for {config.name}; topic={topic_string!r}"
                 )
             try:
-                md, payload = self._get_one_message(queue, config, topic_string, wait_interval_ms=wait_interval_ms)
+                md, payload = self._get_one_message(subscribed_queue, config, topic_string, wait_interval_ms=wait_interval_ms)
             except MQCollectionError as error:
                 self._log_system_topic_diagnostic(
                     config,
@@ -826,9 +857,32 @@ class PyMQICollector:
         finally:
             if subscription is not None:
                 try:
-                    subscription.close(close_sub_queue=True)
+                    subscription.close(close_sub_queue=False)
                 except Exception:
                     LOG.debug("Metadata subscription close failed for %s topic %s", config.name, topic_string, exc_info=True)
+            if queue is not None:
+                try:
+                    queue.close()
+                except Exception:
+                    LOG.debug("Metadata destination queue close failed for %s topic %s", config.name, topic_string, exc_info=True)
+
+    def _open_model_subscription_queue(self, qmgr, config: QueueManagerConfig):
+        options = (
+            getattr(self.pymqi.CMQC, "MQOO_INPUT_EXCLUSIVE", 0)
+            | getattr(self.pymqi.CMQC, "MQOO_FAIL_IF_QUIESCING", 0)
+        )
+        model_queue = getattr(self.pymqi.CMQC, "SYSTEM_DEFAULT_MODEL_QUEUE", None)
+        queue_name = "SYSTEM.DEFAULT.MODEL.QUEUE"
+        try:
+            return self.pymqi.Queue(qmgr, queue_name, options)
+        except self.pymqi.MQMIError as exc:
+            raise self._build_mq_error(
+                config,
+                exc,
+                operation="open metadata destination model queue",
+                object_type="queue",
+                object_name=queue_name,
+            ) from exc
 
     def _run_system_topic_startup_probe(self, config: QueueManagerConfig, qmgr) -> None:
         if not self._system_topic_diagnostics_enabled(config):
@@ -947,6 +1001,57 @@ class PyMQICollector:
         if "%s" in topic_string:
             return topic_string.replace("%s", "+")
         return topic_string
+
+    def _amqsrua_style_direct_system_topic_patterns(self, config: QueueManagerConfig) -> tuple[str, ...]:
+        qmgr_name = config.connection.queue_manager or config.name
+        topics: list[str] = []
+        seen: set[str] = set()
+
+        for class_name, object_name, type_name in _DIRECT_SYSTEM_TOPIC_TYPES:
+            topic_string = self._build_resource_topic("$SYS/MQ", qmgr_name, class_name, type_name, object_name)
+            if topic_string in seen:
+                continue
+            seen.add(topic_string)
+            topics.append(topic_string)
+
+        for queue_name in self._exact_queue_pattern_names(config):
+            for type_name in ("PUT", "GET", "BROWSE"):
+                topic_string = self._build_resource_topic("$SYS/MQ", qmgr_name, "STATQ", type_name, queue_name)
+                if topic_string in seen:
+                    continue
+                seen.add(topic_string)
+                topics.append(topic_string)
+
+        for topic_string in self._configured_explicit_system_topic_patterns(config):
+            if topic_string in seen:
+                continue
+            seen.add(topic_string)
+            topics.append(topic_string)
+
+        return tuple(topics)
+
+    @staticmethod
+    def _build_resource_topic(prefix: str, qmgr_name: str, class_name: str, type_name: str, object_name: str | None) -> str:
+        prefix = prefix.rstrip("/")
+        if object_name:
+            return f"{prefix}/INFO/QMGR/{qmgr_name}/Monitor/{class_name}/{object_name}/{type_name}"
+        return f"{prefix}/INFO/QMGR/{qmgr_name}/Monitor/{class_name}/{type_name}"
+
+    @staticmethod
+    def _exact_queue_pattern_names(config: QueueManagerConfig) -> tuple[str, ...]:
+        queue_names: list[str] = []
+        seen: set[str] = set()
+        for pattern in getattr(config.metrics, "queue_patterns", ()):
+            value = pattern.strip()
+            if not value:
+                continue
+            if any(char in value for char in ("*", "?", "#", "+")):
+                continue
+            if value in seen:
+                continue
+            seen.add(value)
+            queue_names.append(value)
+        return tuple(queue_names)
 
     def _collect_qmgr_metrics(self, config: QueueManagerConfig, pcf) -> list[MetricRecord]:
         records: list[MetricRecord] = []
