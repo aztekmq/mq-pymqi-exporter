@@ -13,11 +13,19 @@ connection:
 metrics:
   include_queue_manager: true
   include_queues: true
+  include_topics: true
   include_channels: true
   include_accounting: true
+  include_statistics: true
   include_activity_trace: true
+  include_system_topic_stream: true
   queue_patterns:
     - APP.*
     - SYSTEM.ADMIN.COMMAND.QUEUE
+  topic_patterns:
+    - SYSTEM.ADMIN.TOPIC
+  system_topic_subscription_patterns:
+    - INFO/QMGR/{qmgr}/#
+  system_topic_max_messages_per_poll: 500
   channel_patterns:
     - DEV.*

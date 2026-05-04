@@ -52,13 +52,21 @@ class WorkerPoolConfig:
 class MetricsConfig:
     include_queue_manager: bool = True
     include_queues: bool = True
+    include_topics: bool = False
     include_channels: bool = False
     include_accounting: bool = False
+    include_statistics: bool = False
     include_activity_trace: bool = False
+    include_system_topic_stream: bool = False
     queue_patterns: tuple[str, ...] = ("*",)
+    topic_patterns: tuple[str, ...] = ("SYSTEM.ADMIN.TOPIC",)
+    system_topic_subscription_patterns: tuple[str, ...] = ("INFO/QMGR/{qmgr}/#",)
     channel_patterns: tuple[str, ...] = ()
     accounting_queue_name: str = "SYSTEM.ADMIN.ACCOUNTING.QUEUE"
+    statistics_queue_name: str = "SYSTEM.ADMIN.STATISTICS.QUEUE"
     activity_trace_queue_name: str = "SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE"
+    system_topic_root_topic: str = "SYSTEM.ADMIN.TOPIC"
+    system_topic_max_messages_per_poll: int = 500
 
 
 @dataclass(frozen=True)
@@ -150,13 +158,21 @@ def load_exporter_config(path: str | Path) -> ExporterConfig:
         metrics = MetricsConfig(
             include_queue_manager=bool(metrics_raw.get("include_queue_manager", True)),
             include_queues=bool(metrics_raw.get("include_queues", True)),
+            include_topics=bool(metrics_raw.get("include_topics", False)),
             include_channels=bool(metrics_raw.get("include_channels", False)),
             include_accounting=bool(metrics_raw.get("include_accounting", False)),
+            include_statistics=bool(metrics_raw.get("include_statistics", False)),
             include_activity_trace=bool(metrics_raw.get("include_activity_trace", False)),
+            include_system_topic_stream=bool(metrics_raw.get("include_system_topic_stream", False)),
             queue_patterns=tuple(metrics_raw.get("queue_patterns", ["*"])),
+            topic_patterns=tuple(metrics_raw.get("topic_patterns", ["SYSTEM.ADMIN.TOPIC"])),
+            system_topic_subscription_patterns=tuple(metrics_raw.get("system_topic_subscription_patterns", ["INFO/QMGR/{qmgr}/#"])),
             channel_patterns=tuple(metrics_raw.get("channel_patterns", [])),
             accounting_queue_name=str(metrics_raw.get("accounting_queue_name", "SYSTEM.ADMIN.ACCOUNTING.QUEUE")),
+            statistics_queue_name=str(metrics_raw.get("statistics_queue_name", "SYSTEM.ADMIN.STATISTICS.QUEUE")),
             activity_trace_queue_name=str(metrics_raw.get("activity_trace_queue_name", "SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE")),
+            system_topic_root_topic=str(metrics_raw.get("system_topic_root_topic", "SYSTEM.ADMIN.TOPIC")),
+            system_topic_max_messages_per_poll=int(metrics_raw.get("system_topic_max_messages_per_poll", 500)),
         )
         qmgrs.append(
             QueueManagerConfig(

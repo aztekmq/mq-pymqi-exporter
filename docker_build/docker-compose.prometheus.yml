@@ -1,0 +1,13 @@
+services:
+  prometheus:
+    build:
+      context: ./prometheus
+    image: prometheus-local-monitoring
+    container_name: prometheus-local-monitoring
+    ports:
+      - "127.0.0.1:9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./prometheus-data:/prometheus
+    restart: unless-stopped

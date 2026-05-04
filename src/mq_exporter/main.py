@@ -19,8 +19,10 @@ LOG = logging.getLogger(__name__)
 
 def _startup_target_lines(config) -> list[str]:
     accounting_enabled = any(getattr(qmgr.metrics, "include_accounting", False) for qmgr in getattr(config, "queue_managers", ()))
+    statistics_enabled = any(getattr(qmgr.metrics, "include_statistics", False) for qmgr in getattr(config, "queue_managers", ()))
     activity_enabled = any(getattr(qmgr.metrics, "include_activity_trace", False) for qmgr in getattr(config, "queue_managers", ()))
-    collector_mode = "pyMQI PCF polling plus admin queue draining" if (accounting_enabled or activity_enabled) else "pyMQI PCF polling only"
+    system_topic_stream_enabled = any(getattr(qmgr.metrics, "include_system_topic_stream", False) for qmgr in getattr(config, "queue_managers", ()))
+    collector_mode = "pyMQI PCF polling plus admin queue draining" if (accounting_enabled or statistics_enabled or activity_enabled or system_topic_stream_enabled) else "pyMQI PCF polling only"
     lines = [
         f"Collector mode: {collector_mode}.",
         "MQ objects used by the exporter for metric polling:",
@@ -29,6 +31,8 @@ def _startup_target_lines(config) -> list[str]:
     ]
     for qmgr in getattr(config, "queue_managers", ()):
         queue_patterns = ", ".join(qmgr.metrics.queue_patterns) if qmgr.metrics.include_queues else "<disabled>"
+        topic_patterns = ", ".join(getattr(qmgr.metrics, "topic_patterns", ())) if getattr(qmgr.metrics, "include_topics", False) else "<disabled>"
+        system_topic_patterns = ", ".join(getattr(qmgr.metrics, "system_topic_subscription_patterns", ())) if getattr(qmgr.metrics, "include_system_topic_stream", False) else "<disabled>"
         channel_patterns = ", ".join(qmgr.metrics.channel_patterns) if qmgr.metrics.include_channels else "<disabled>"
         lines.extend(
             [
@@ -38,14 +42,24 @@ def _startup_target_lines(config) -> list[str]:
                 ),
                 f"    queue manager metrics: {'enabled' if qmgr.metrics.include_queue_manager else 'disabled'}",
                 f"    queue inquiry patterns: {queue_patterns}",
+                f"    topic inquiry patterns: {topic_patterns}",
+                f"    system topic subscription patterns: {system_topic_patterns}",
                 f"    channel inquiry patterns: {channel_patterns}",
                 (
                     f"    accounting queue drain: {'enabled' if getattr(qmgr.metrics, 'include_accounting', False) else 'disabled'} "
                     f"({getattr(qmgr.metrics, 'accounting_queue_name', 'SYSTEM.ADMIN.ACCOUNTING.QUEUE')})"
                 ),
                 (
+                    f"    statistics queue drain: {'enabled' if getattr(qmgr.metrics, 'include_statistics', False) else 'disabled'} "
+                    f"({getattr(qmgr.metrics, 'statistics_queue_name', 'SYSTEM.ADMIN.STATISTICS.QUEUE')})"
+                ),
+                (
                     f"    activity trace queue drain: {'enabled' if getattr(qmgr.metrics, 'include_activity_trace', False) else 'disabled'} "
                     f"({getattr(qmgr.metrics, 'activity_trace_queue_name', 'SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE')})"
+                ),
+                (
+                    f"    system topic stream drain: {'enabled' if getattr(qmgr.metrics, 'include_system_topic_stream', False) else 'disabled'} "
+                    f"({getattr(qmgr.metrics, 'system_topic_root_topic', 'SYSTEM.ADMIN.TOPIC')})"
                 ),
             ]
         )
@@ -124,6 +138,9 @@ def main() -> int:
     finally:
         scheduler.stop()
         http_server.stop()
+        close_collector = getattr(collector, "close", None)
+        if callable(close_collector):
+            close_collector()
 
     if forced_interrupt or interrupt_count > 0:
         return 130

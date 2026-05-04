@@ -65,12 +65,19 @@ class MainTests(unittest.TestCase):
             metrics=types.SimpleNamespace(
                 include_queue_manager=True,
                 include_queues=True,
+                include_topics=True,
                 include_channels=True,
                 include_accounting=True,
+                include_statistics=True,
                 include_activity_trace=True,
+                include_system_topic_stream=True,
                 accounting_queue_name="SYSTEM.ADMIN.ACCOUNTING.QUEUE",
+                statistics_queue_name="SYSTEM.ADMIN.STATISTICS.QUEUE",
                 activity_trace_queue_name="SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE",
+                system_topic_root_topic="SYSTEM.ADMIN.TOPIC",
                 queue_patterns=("APP.*",),
+                topic_patterns=("SYSTEM.ADMIN.TOPIC",),
+                system_topic_subscription_patterns=("INFO/QMGR/{qmgr}/#",),
                 channel_patterns=("DEV.*",),
             ),
         )
@@ -79,6 +86,9 @@ class MainTests(unittest.TestCase):
         lines = main_module._startup_target_lines(config)
 
         self.assertTrue(any("PCF command queue: SYSTEM.ADMIN.COMMAND.QUEUE" in line for line in lines))
+        self.assertTrue(any("SYSTEM.ADMIN.STATISTICS.QUEUE" in line for line in lines))
+        self.assertTrue(any("SYSTEM.ADMIN.TOPIC" in line for line in lines))
+        self.assertTrue(any("INFO/QMGR/{qmgr}/#" in line for line in lines))
         self.assertTrue(any("SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE" in line for line in lines))
         self.assertTrue(any("Collector mode: pyMQI PCF polling plus admin queue draining." in line for line in lines))
 

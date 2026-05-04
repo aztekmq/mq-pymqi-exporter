@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from collections.abc import Iterable
+from threading import RLock
 from typing import Any
+from xml.etree import ElementTree
 
 from .config import QueueManagerConfig
 from .metrics import MetricRecord
@@ -18,6 +20,12 @@ class _MetricSpec:
     help_text: str
 
 
+@dataclass
+class _CollectorSession:
+    qmgr: Any
+    subscriptions: list[Any]
+
+
 Q_MGR_SPECS = {
     "MQIA_PLATFORM": _MetricSpec("ibmmq_qmgr_platform", "Queue manager platform code."),
     "MQIA_COMMAND_LEVEL": _MetricSpec("ibmmq_qmgr_command_level", "Queue manager command level."),
@@ -28,6 +36,14 @@ QUEUE_SPECS = {
     "MQIA_MAX_Q_DEPTH": _MetricSpec("ibmmq_queue_max_depth", "Maximum configured queue depth."),
     "MQIA_OPEN_INPUT_COUNT": _MetricSpec("ibmmq_queue_open_input_count", "Current open input handle count."),
     "MQIA_OPEN_OUTPUT_COUNT": _MetricSpec("ibmmq_queue_open_output_count", "Current open output handle count."),
+}
+
+TOPIC_STATUS_SPECS = {
+    "MQIA_PUB_COUNT": _MetricSpec("ibmmq_topic_publishers", "Current number of publishers on the topic."),
+    "MQIA_SUB_COUNT": _MetricSpec("ibmmq_topic_subscriptions", "Current number of subscriptions on the topic."),
+    "MQIA_INHIBIT_PUB": _MetricSpec("ibmmq_topic_inhibit_publications", "Whether publications are inhibited on the topic."),
+    "MQIA_INHIBIT_SUB": _MetricSpec("ibmmq_topic_inhibit_subscriptions", "Whether subscriptions are inhibited on the topic."),
+    "MQIA_DURABLE_SUB": _MetricSpec("ibmmq_topic_durable_subscriptions", "Whether durable subscriptions are allowed on the topic."),
 }
 
 CHANNEL_SPECS = {
@@ -49,8 +65,26 @@ ACCOUNTING_SPECS = {
     "MQIAMO64_TOPIC_PUT_BYTES": _MetricSpec("ibmmq_accounting_topic_put_bytes", "Topic put bytes observed in IBM MQ accounting messages during the last poll."),
 }
 
+STATISTICS_SPECS = {
+    "MQIAMO_PUTS": _MetricSpec("ibmmq_statistics_puts", "Puts observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO_GETS": _MetricSpec("ibmmq_statistics_gets", "Gets observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO_PUT1S": _MetricSpec("ibmmq_statistics_put1s", "Put1 operations observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO_BROWSES": _MetricSpec("ibmmq_statistics_browses", "Browse operations observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO_PUTS_FAILED": _MetricSpec("ibmmq_statistics_puts_failed", "Failed put attempts observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO_GETS_FAILED": _MetricSpec("ibmmq_statistics_gets_failed", "Failed get attempts observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO_PUT1S_FAILED": _MetricSpec("ibmmq_statistics_put1s_failed", "Failed put1 attempts observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO_BROWSES_FAILED": _MetricSpec("ibmmq_statistics_browses_failed", "Failed browse attempts observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO_MSGS_EXPIRED": _MetricSpec("ibmmq_statistics_messages_expired", "Expired messages observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO_MSGS_NOT_QUEUED": _MetricSpec("ibmmq_statistics_messages_not_queued", "Messages bypassing the queue during the last poll."),
+    "MQIAMO_MSGS_PURGED": _MetricSpec("ibmmq_statistics_messages_purged", "Purged messages observed during the last poll."),
+    "MQIAMO64_PUT_BYTES": _MetricSpec("ibmmq_statistics_put_bytes", "Bytes written as observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO64_GET_BYTES": _MetricSpec("ibmmq_statistics_get_bytes", "Bytes read as observed in IBM MQ statistics messages during the last poll."),
+    "MQIAMO64_BROWSE_BYTES": _MetricSpec("ibmmq_statistics_browse_bytes", "Browse bytes observed in IBM MQ statistics messages during the last poll."),
+}
+
 ADMIN_QUEUE_MESSAGE_SPECS = {
     "accounting": _MetricSpec("ibmmq_accounting_messages_consumed", "Accounting messages consumed from the accounting queue during the last poll."),
+    "statistics": _MetricSpec("ibmmq_statistics_messages_consumed", "Statistics messages consumed from the statistics queue during the last poll."),
     "activity_trace": _MetricSpec("ibmmq_activity_trace_messages_consumed", "Activity trace messages consumed from the activity trace queue during the last poll."),
 }
 
@@ -58,6 +92,149 @@ ACTIVITY_OPERATION_SPEC = _MetricSpec(
     "ibmmq_activity_operations",
     "IBM MQ activity operations consumed from the activity trace queue during the last poll.",
 )
+
+SYSTEM_TOPIC_STREAM_COUNT_SPEC = _MetricSpec(
+    "ibmmq_system_topic_messages_consumed",
+    "System topic publications consumed from the managed subscription stream during the last poll.",
+)
+SYSTEM_TOPIC_PUBLICATION_COUNT_SPEC = _MetricSpec(
+    "ibmmq_system_topic_publications",
+    "System topic publications observed during the last poll.",
+)
+SYSTEM_TOPIC_PUBLICATION_BYTES_SPEC = _MetricSpec(
+    "ibmmq_system_topic_publication_bytes",
+    "System topic publication bytes observed during the last poll.",
+)
+
+_SYSTEM_TOPIC_KNOWN_CLASSES = {"CPU", "DISK", "STATMQI", "STATQ", "STATAPP"}
+_SYSTEM_TOPIC_SELECTOR_PREFIXES = (
+    "MQIAMO64_",
+    "MQIAMO_",
+    "MQIACH_",
+    "MQIACF_",
+    "MQCACF_",
+    "MQIA_",
+    "MQCA_",
+)
+
+_MICROSECOND_SELECTORS = {
+    "MQIAMO64_MONITOR_INTERVAL",
+    "MQIAMO64_Q_TIME_AVG",
+    "MQIAMO64_Q_TIME_MAX",
+    "MQIAMO64_Q_TIME_MIN",
+    "MQIAMO64_AVG_Q_TIME",
+    "MQIAMO_Q_TIME_AVG",
+    "MQIAMO_Q_TIME_MAX",
+    "MQIAMO_Q_TIME_MIN",
+    "MQIAMO_AVG_Q_TIME",
+}
+
+_EXPLICIT_SYSTEM_TOPIC_METRICS: dict[tuple[str, str], _MetricSpec] = {
+    ("STATQ", "MQIAMO_OPENS"): _MetricSpec("ibmmq_statq_mqopen_total", "Interval total MQOPEN calls against the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_CLOSES"): _MetricSpec("ibmmq_statq_mqclose_total", "Interval total MQCLOSE calls against the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_INQS"): _MetricSpec("ibmmq_statq_mqinq_total", "Interval total MQINQ calls against the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_SETS"): _MetricSpec("ibmmq_statq_mqset_total", "Interval total MQSET calls against the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_PUTS"): _MetricSpec("ibmmq_statq_messages_put_total", "Interval total messages put to the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_GETS"): _MetricSpec("ibmmq_statq_messages_got_total", "Interval total destructive gets from the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_BROWSES"): _MetricSpec("ibmmq_statq_messages_browsed_total", "Interval total browse operations on the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_PUT1S"): _MetricSpec("ibmmq_statq_put1_total", "Interval total MQPUT1 operations on the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_PUTS_FAILED"): _MetricSpec("ibmmq_statq_put_failures_total", "Interval total failed put operations on the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_GETS_FAILED"): _MetricSpec("ibmmq_statq_get_failures_total", "Interval total failed destructive get operations on the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_BROWSES_FAILED"): _MetricSpec("ibmmq_statq_browse_failures_total", "Interval total failed browse operations on the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_PUT1S_FAILED"): _MetricSpec("ibmmq_statq_put1_failures_total", "Interval total failed MQPUT1 operations on the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO64_PUT_BYTES"): _MetricSpec("ibmmq_statq_put_bytes_total", "Interval total bytes written to the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO64_GET_BYTES"): _MetricSpec("ibmmq_statq_get_bytes_total", "Interval total bytes read by destructive gets from the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO64_BROWSE_BYTES"): _MetricSpec("ibmmq_statq_browse_bytes_total", "Interval total bytes read by browse operations from the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_MSGS_EXPIRED"): _MetricSpec("ibmmq_statq_messages_expired_total", "Interval total expired messages for the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO_MSGS_PURGED"): _MetricSpec("ibmmq_statq_queue_purges_total", "Interval total queue purge operations during the published monitoring interval."),
+    ("STATQ", "MQIAMO_MSGS_NOT_QUEUED"): _MetricSpec("ibmmq_statq_messages_not_queued_total", "Interval total messages that bypassed the queue during the published monitoring interval."),
+    ("STATQ", "MQIAMO64_Q_TIME_AVG"): _MetricSpec("ibmmq_statq_queue_time_average_seconds", "Average time a message spent on the queue during the published monitoring interval, in seconds."),
+    ("STATQ", "MQIAMO64_Q_TIME_MAX"): _MetricSpec("ibmmq_statq_queue_time_max_seconds", "Maximum time a message spent on the queue during the published monitoring interval, in seconds."),
+    ("STATQ", "MQIAMO64_Q_TIME_MIN"): _MetricSpec("ibmmq_statq_queue_time_min_seconds", "Minimum time a message spent on the queue during the published monitoring interval, in seconds."),
+    ("STATQ", "MQIAMO_Q_MAX_DEPTH"): _MetricSpec("ibmmq_statq_queue_depth_high_watermark", "Highest queue depth observed during the published monitoring interval."),
+    ("STATQ", "MQIAMO_Q_MIN_DEPTH"): _MetricSpec("ibmmq_statq_queue_depth_low_watermark", "Lowest queue depth observed during the published monitoring interval."),
+    ("STATQ", "MQIA_CURRENT_Q_DEPTH"): _MetricSpec("ibmmq_statq_queue_depth_current", "Queue depth captured at the end of the published monitoring interval."),
+    ("STATQ", "MQIA_MAX_Q_DEPTH"): _MetricSpec("ibmmq_statq_queue_depth_max_configured", "Configured MAXDEPTH for the queue."),
+    ("STATQ", "MQIA_OPEN_INPUT_COUNT"): _MetricSpec("ibmmq_statq_open_input_handles_current", "Open input handle count captured at the end of the published monitoring interval."),
+    ("STATQ", "MQIA_OPEN_OUTPUT_COUNT"): _MetricSpec("ibmmq_statq_open_output_handles_current", "Open output handle count captured at the end of the published monitoring interval."),
+    ("STATQ", "MQIA_Q_DEPTH_HIGH_LIMIT"): _MetricSpec("ibmmq_statq_queue_depth_high_limit", "Configured high-depth event limit for the queue."),
+    ("STATQ", "MQIA_Q_DEPTH_LOW_LIMIT"): _MetricSpec("ibmmq_statq_queue_depth_low_limit", "Configured low-depth event limit for the queue."),
+    ("STATQ", "MQIAMO64_MONITOR_INTERVAL"): _MetricSpec("ibmmq_statq_monitor_interval_seconds", "Length of the STATQ published monitoring interval in seconds."),
+
+    ("STATMQI", "MQIAMO_CONNS"): _MetricSpec("ibmmq_statmqi_mqconn_mqconnx_total", "Interval total MQCONN and MQCONNX calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_CONNS_FAILED"): _MetricSpec("ibmmq_statmqi_mqconn_mqconnx_failures_total", "Interval total failed MQCONN and MQCONNX calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_CONNS_MAX"): _MetricSpec("ibmmq_statmqi_connections_high_watermark", "Concurrent connection high-water mark captured for the published monitoring interval."),
+    ("STATMQI", "MQIAMO_DISCS"): _MetricSpec("ibmmq_statmqi_mqdisc_total", "Interval total MQDISC calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_DISCS_IMPLICIT"): _MetricSpec("ibmmq_statmqi_implicit_disconnect_total", "Interval total implicit disconnects during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_OPENS"): _MetricSpec("ibmmq_statmqi_mqopen_total", "Interval total MQOPEN calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_OPENS_FAILED"): _MetricSpec("ibmmq_statmqi_mqopen_failures_total", "Interval total failed MQOPEN calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_CLOSES"): _MetricSpec("ibmmq_statmqi_mqclose_total", "Interval total MQCLOSE calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_CLOSES_FAILED"): _MetricSpec("ibmmq_statmqi_mqclose_failures_total", "Interval total failed MQCLOSE calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_INQS"): _MetricSpec("ibmmq_statmqi_mqinq_total", "Interval total MQINQ calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_INQS_FAILED"): _MetricSpec("ibmmq_statmqi_mqinq_failures_total", "Interval total failed MQINQ calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_SETS"): _MetricSpec("ibmmq_statmqi_mqset_total", "Interval total MQSET calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_SETS_FAILED"): _MetricSpec("ibmmq_statmqi_mqset_failures_total", "Interval total failed MQSET calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_PUTS"): _MetricSpec("ibmmq_statmqi_mqput_mqput1_total", "Interval total MQPUT and MQPUT1 calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_GETS"): _MetricSpec("ibmmq_statmqi_destructive_get_total", "Interval total destructive MQGET calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_BROWSES"): _MetricSpec("ibmmq_statmqi_browse_total", "Interval total browse operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_PUT1S"): _MetricSpec("ibmmq_statmqi_mqput1_total", "Interval total MQPUT1 calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_BROWSES_FAILED"): _MetricSpec("ibmmq_statmqi_browse_failures_total", "Interval total failed browse operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_STATS"): _MetricSpec("ibmmq_statmqi_mqstat_total", "Interval total MQSTAT calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_STATS_FAILED"): _MetricSpec("ibmmq_statmqi_mqstat_failures_total", "Interval total failed MQSTAT calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_CBS"): _MetricSpec("ibmmq_statmqi_mqcb_total", "Interval total MQCB calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_CBS_FAILED"): _MetricSpec("ibmmq_statmqi_mqcb_failures_total", "Interval total failed MQCB calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_CTLS"): _MetricSpec("ibmmq_statmqi_mqctl_total", "Interval total MQCTL calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_COMMITS"): _MetricSpec("ibmmq_statmqi_commit_total", "Interval total commit operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_BACKOUTS"): _MetricSpec("ibmmq_statmqi_rollback_total", "Interval total rollback operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_SUBS_NDUR"): _MetricSpec("ibmmq_statmqi_non_durable_subscription_create_total", "Interval total non-durable subscription create operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_SUBS_DUR"): _MetricSpec("ibmmq_statmqi_durable_subscription_create_total", "Interval total durable subscription create operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_SUBS_FAILED"): _MetricSpec("ibmmq_statmqi_subscription_create_alter_resume_failures_total", "Interval total failed create, alter, or resume subscription operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_UNSUBS_DUR"): _MetricSpec("ibmmq_statmqi_durable_subscription_delete_total", "Interval total durable subscription delete operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_UNSUBS_NDUR"): _MetricSpec("ibmmq_statmqi_non_durable_subscription_delete_total", "Interval total non-durable subscription delete operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_UNSUBS_FAILED"): _MetricSpec("ibmmq_statmqi_subscription_delete_failures_total", "Interval total failed subscription delete operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_TOPIC_PUTS"): _MetricSpec("ibmmq_statmqi_topic_mqput_mqput1_total", "Interval total topic MQPUT and MQPUT1 calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_TOPIC_PUT1S"): _MetricSpec("ibmmq_statmqi_topic_mqput1_total", "Interval total topic MQPUT1 calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_TOPIC_PUTS_FAILED"): _MetricSpec("ibmmq_statmqi_topic_put_failures_total", "Interval total failed topic MQPUT and MQPUT1 calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_TOPIC_PUT1S_FAILED"): _MetricSpec("ibmmq_statmqi_topic_put1_failures_total", "Interval total failed topic MQPUT1 calls during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_MSGS_SENT"): _MetricSpec("ibmmq_statmqi_published_to_subscribers_total", "Interval total publications delivered to subscribers during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_MSGS_EXPIRED"): _MetricSpec("ibmmq_statmqi_expired_message_total", "Interval total expired messages during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_MSGS_PURGED"): _MetricSpec("ibmmq_statmqi_purged_queue_total", "Interval total queue purge operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_PUTS_FAILED"): _MetricSpec("ibmmq_statmqi_put_failures_total", "Interval total failed put operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO_GETS_FAILED"): _MetricSpec("ibmmq_statmqi_get_failures_total", "Interval total failed destructive get operations during the published monitoring interval."),
+    ("STATMQI", "MQIAMO64_PUT_BYTES"): _MetricSpec("ibmmq_statmqi_put_bytes_total", "Interval total bytes written by MQPUT and MQPUT1 during the published monitoring interval."),
+    ("STATMQI", "MQIAMO64_GET_BYTES"): _MetricSpec("ibmmq_statmqi_get_bytes_total", "Interval total bytes read by destructive gets during the published monitoring interval."),
+    ("STATMQI", "MQIAMO64_TOPIC_PUT_BYTES"): _MetricSpec("ibmmq_statmqi_topic_put_bytes_total", "Interval total bytes written by topic MQPUT and MQPUT1 during the published monitoring interval."),
+    ("STATMQI", "MQIAMO64_PUBLISH_MSG_BYTES"): _MetricSpec("ibmmq_statmqi_published_to_subscribers_bytes_total", "Interval total bytes published to subscribers during the published monitoring interval."),
+    ("STATMQI", "MQIAMO64_MONITOR_INTERVAL"): _MetricSpec("ibmmq_statmqi_monitor_interval_seconds", "Length of the STATMQI published monitoring interval in seconds."),
+
+    ("STATAPP", "MQIAMO_CONNS"): _MetricSpec("ibmmq_statapp_mqconn_mqconnx_total", "Interval total MQCONN and MQCONNX calls attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_DISCS"): _MetricSpec("ibmmq_statapp_mqdisc_total", "Interval total MQDISC calls attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_OPENS"): _MetricSpec("ibmmq_statapp_mqopen_total", "Interval total MQOPEN calls attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_CLOSES"): _MetricSpec("ibmmq_statapp_mqclose_total", "Interval total MQCLOSE calls attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_INQS"): _MetricSpec("ibmmq_statapp_mqinq_total", "Interval total MQINQ calls attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_SETS"): _MetricSpec("ibmmq_statapp_mqset_total", "Interval total MQSET calls attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_PUTS"): _MetricSpec("ibmmq_statapp_messages_put_total", "Interval total messages put by the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_GETS"): _MetricSpec("ibmmq_statapp_messages_got_total", "Interval total destructive gets by the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_BROWSES"): _MetricSpec("ibmmq_statapp_messages_browsed_total", "Interval total browse operations by the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_BROWSES_FAILED"): _MetricSpec("ibmmq_statapp_browse_failures_total", "Interval total failed browse operations attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_PUTS_FAILED"): _MetricSpec("ibmmq_statapp_put_failures_total", "Interval total failed put operations attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_GETS_FAILED"): _MetricSpec("ibmmq_statapp_get_failures_total", "Interval total failed destructive get operations attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_COMMITS"): _MetricSpec("ibmmq_statapp_commit_total", "Interval total commit operations attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_BACKOUTS"): _MetricSpec("ibmmq_statapp_rollback_total", "Interval total rollback operations attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_TOPIC_PUTS"): _MetricSpec("ibmmq_statapp_topic_put_total", "Interval total topic publish operations attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO_TOPIC_PUTS_FAILED"): _MetricSpec("ibmmq_statapp_topic_put_failures_total", "Interval total failed topic publish operations attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO64_PUT_BYTES"): _MetricSpec("ibmmq_statapp_put_bytes_total", "Interval total bytes written by the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO64_GET_BYTES"): _MetricSpec("ibmmq_statapp_get_bytes_total", "Interval total bytes read by the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO64_TOPIC_PUT_BYTES"): _MetricSpec("ibmmq_statapp_topic_put_bytes_total", "Interval total topic publish bytes attributed to the application during the published monitoring interval."),
+    ("STATAPP", "MQIAMO64_MONITOR_INTERVAL"): _MetricSpec("ibmmq_statapp_monitor_interval_seconds", "Length of the STATAPP published monitoring interval in seconds."),
+
+    ("CPU", "MQIAMO_MONITOR_PERCENT"): _MetricSpec("ibmmq_cpu_percentage_current", "CPU percentage-style value captured from the system-topic publication."),
+    ("CPU", "MQIAMO64_BYTES"): _MetricSpec("ibmmq_cpu_bytes_current", "CPU or memory byte-style value captured from the system-topic publication."),
+    ("CPU", "MQIAMO64_MONITOR_INTERVAL"): _MetricSpec("ibmmq_cpu_monitor_interval_seconds", "Length of the CPU published monitoring interval in seconds."),
+    ("DISK", "MQIAMO_MONITOR_PERCENT"): _MetricSpec("ibmmq_disk_percentage_current", "Disk percentage-style value captured from the system-topic publication."),
+    ("DISK", "MQIAMO64_BYTES"): _MetricSpec("ibmmq_disk_bytes_current", "Disk byte-style value captured from the system-topic publication."),
+    ("DISK", "MQIAMO64_MONITOR_INTERVAL"): _MetricSpec("ibmmq_disk_monitor_interval_seconds", "Length of the DISK published monitoring interval in seconds."),
+}
 
 
 @dataclass(frozen=True)
@@ -81,28 +258,81 @@ class PyMQICollector:
         except ImportError as exc:
             raise RuntimeError("pymqi is required to collect MQ metrics") from exc
         self.pymqi = pymqi
+        self._session_lock = RLock()
+        self._sessions: dict[str, _CollectorSession] = {}
+        self._selector_names = self._build_selector_name_map()
+
+    def close(self) -> None:
+        with self._session_lock:
+            names = list(self._sessions)
+        for name in names:
+            self._invalidate_session(name)
 
     def collect(self, config: QueueManagerConfig) -> list[MetricRecord]:
-        qmgr = self._connect(config)
+        session = self._get_or_create_session(config)
         try:
-            pcf = self.pymqi.PCFExecute(qmgr)
+            pcf = self.pymqi.PCFExecute(session.qmgr)
             records: list[MetricRecord] = []
             if config.metrics.include_queue_manager:
                 records.extend(self._collect_qmgr_metrics(config, pcf))
             if config.metrics.include_queues:
                 records.extend(self._collect_queue_metrics(config, pcf))
+            if getattr(config.metrics, "include_topics", False):
+                records.extend(self._collect_topic_metrics(config, pcf))
             if config.metrics.include_channels:
                 records.extend(self._collect_channel_metrics(config, pcf))
             if config.metrics.include_accounting:
-                records.extend(self._collect_accounting_metrics(config, qmgr))
+                records.extend(self._collect_accounting_metrics(config, session.qmgr))
+            if getattr(config.metrics, "include_statistics", False):
+                records.extend(self._collect_statistics_metrics(config, session.qmgr))
             if config.metrics.include_activity_trace:
-                records.extend(self._collect_activity_trace_metrics(config, qmgr))
+                records.extend(self._collect_activity_trace_metrics(config, session.qmgr))
+            if getattr(config.metrics, "include_system_topic_stream", False):
+                records.extend(self._collect_system_topic_stream_metrics(config, session))
             return records
-        finally:
+        except Exception:
+            self._invalidate_session(config.name)
+            raise
+
+    def _get_or_create_session(self, config: QueueManagerConfig) -> _CollectorSession:
+        with self._session_lock:
+            session = self._sessions.get(config.name)
+            if session is not None:
+                return session
+
+        qmgr = self._connect(config)
+        subscriptions: list[Any] = []
+        try:
+            if getattr(config.metrics, "include_system_topic_stream", False):
+                subscriptions = self._open_system_topic_subscriptions(config, qmgr)
+        except Exception:
             try:
                 qmgr.disconnect()
             except Exception:
-                LOG.exception("Disconnect failed for %s", config.name)
+                LOG.debug("Disconnect failed while tearing down partial session for %s", config.name, exc_info=True)
+            raise
+
+        session = _CollectorSession(qmgr=qmgr, subscriptions=subscriptions)
+        with self._session_lock:
+            self._sessions[config.name] = session
+        return session
+
+    def _invalidate_session(self, qmgr_name: str) -> None:
+        with self._session_lock:
+            session = self._sessions.pop(qmgr_name, None)
+        if session is None:
+            return
+
+        for subscription in session.subscriptions:
+            try:
+                subscription.close(close_sub_queue=True)
+            except Exception:
+                LOG.debug("Subscription close failed for %s", qmgr_name, exc_info=True)
+
+        try:
+            session.qmgr.disconnect()
+        except Exception:
+            LOG.debug("Disconnect failed for %s", qmgr_name, exc_info=True)
 
     def _connect(self, config: QueueManagerConfig):
         password = config.connection.resolved_password()
@@ -122,6 +352,46 @@ class PyMQICollector:
                 object_type="queue manager",
                 object_name=config.connection.queue_manager,
             ) from exc
+
+    def _open_system_topic_subscriptions(self, config: QueueManagerConfig, qmgr) -> list[Any]:
+        subscriptions: list[Any] = []
+        sub_opts = (
+            getattr(self.pymqi.CMQC, "MQSO_CREATE", 0)
+            | getattr(self.pymqi.CMQC, "MQSO_NON_DURABLE", 0)
+            | getattr(self.pymqi.CMQC, "MQSO_MANAGED", 0)
+        )
+        root_topic = getattr(config.metrics, "system_topic_root_topic", "SYSTEM.ADMIN.TOPIC")
+
+        for pattern in self._resolved_system_topic_patterns(config):
+            kwargs: dict[str, Any] = {"sub_opts": sub_opts}
+            if pattern.startswith("$SYS/"):
+                kwargs["topic_string"] = pattern
+            else:
+                kwargs["topic_name"] = root_topic
+                kwargs["topic_string"] = pattern
+
+            try:
+                subscriptions.append(self.pymqi.Subscription(qmgr, **kwargs))
+            except self.pymqi.MQMIError as exc:
+                raise self._build_mq_error(
+                    config,
+                    exc,
+                    operation="open managed subscription",
+                    object_type="topic",
+                    object_name=pattern,
+                ) from exc
+        return subscriptions
+
+    def _resolved_system_topic_patterns(self, config: QueueManagerConfig) -> tuple[str, ...]:
+        resolved: list[str] = []
+        for pattern in getattr(config.metrics, "system_topic_subscription_patterns", ()):
+            resolved.append(
+                pattern.format(
+                    qmgr=config.name,
+                    queue_manager=config.connection.queue_manager,
+                )
+            )
+        return tuple(resolved)
 
     def _collect_qmgr_metrics(self, config: QueueManagerConfig, pcf) -> list[MetricRecord]:
         records: list[MetricRecord] = []
@@ -165,7 +435,7 @@ class PyMQICollector:
                 },
             )
             for response in responses:
-                queue_name = str(response.get(queue_name_attr, "")).strip()
+                queue_name = self._normalize_mq_string(response.get(queue_name_attr, ""))
                 if not queue_name:
                     continue
                 for attr_name, spec in QUEUE_SPECS.items():
@@ -180,6 +450,52 @@ class PyMQICollector:
                             name=spec.metric_name,
                             documentation=spec.help_text,
                             labels={"qmgr": config.name, "queue": queue_name},
+                            value=value,
+                        )
+                    )
+        return records
+
+    def _collect_topic_metrics(self, config: QueueManagerConfig, pcf) -> list[MetricRecord]:
+        records: list[MetricRecord] = []
+        topic_string_attr = getattr(self.pymqi.CMQC, "MQCA_TOPIC_STRING", None)
+        topic_status_type_attr = getattr(self.pymqi.CMQCFC, "MQIACF_TOPIC_STATUS_TYPE", None)
+        topic_status_value = self._cmqcfc_value("MQIACF_TOPIC_STATUS")
+        admin_topic_name_attr = getattr(self.pymqi.CMQC, "MQCA_ADMIN_TOPIC_NAME", None)
+        if topic_string_attr is None:
+            return records
+
+        for pattern in getattr(config.metrics, "topic_patterns", ()):
+            arguments = {topic_string_attr: pattern}
+            if topic_status_type_attr is not None and topic_status_value is not None:
+                arguments[topic_status_type_attr] = topic_status_value
+            responses = self._call_pcf(
+                pcf.MQCMD_INQUIRE_TOPIC_STATUS,
+                config,
+                operation="MQCMD_INQUIRE_TOPIC_STATUS",
+                object_type="topic",
+                object_name=pattern,
+                arguments=arguments,
+            )
+            for response in responses:
+                topic_string = self._normalize_mq_string(response.get(topic_string_attr, ""))
+                if not topic_string:
+                    continue
+                labels = {"qmgr": config.name, "topic": topic_string}
+                admin_topic_name = self._normalize_mq_string(response.get(admin_topic_name_attr, "")) if admin_topic_name_attr is not None else ""
+                if admin_topic_name:
+                    labels["admin_topic_name"] = admin_topic_name
+                for attr_name, spec in TOPIC_STATUS_SPECS.items():
+                    attr_id = getattr(self.pymqi.CMQC, attr_name, None)
+                    if attr_id is None or attr_id not in response:
+                        continue
+                    value = self._coerce_numeric(response[attr_id])
+                    if value is None:
+                        continue
+                    records.append(
+                        MetricRecord(
+                            name=spec.metric_name,
+                            documentation=spec.help_text,
+                            labels=labels,
                             value=value,
                         )
                     )
@@ -201,7 +517,7 @@ class PyMQICollector:
                 arguments={channel_name_attr: pattern},
             )
             for response in responses:
-                channel_name = str(response.get(channel_name_attr, "")).strip()
+                channel_name = self._normalize_mq_string(response.get(channel_name_attr, ""))
                 if not channel_name:
                     continue
                 for attr_name, spec in CHANNEL_SPECS.items():
@@ -230,6 +546,15 @@ class PyMQICollector:
             parser=self._parse_accounting_message,
         )
 
+    def _collect_statistics_metrics(self, config: QueueManagerConfig, qmgr) -> list[MetricRecord]:
+        return self._collect_admin_queue_metrics(
+            config,
+            qmgr,
+            queue_name=getattr(config.metrics, "statistics_queue_name", "SYSTEM.ADMIN.STATISTICS.QUEUE"),
+            source_name="statistics",
+            parser=self._parse_statistics_message,
+        )
+
     def _collect_activity_trace_metrics(self, config: QueueManagerConfig, qmgr) -> list[MetricRecord]:
         return self._collect_admin_queue_metrics(
             config,
@@ -238,6 +563,32 @@ class PyMQICollector:
             source_name="activity_trace",
             parser=self._parse_activity_trace_message,
         )
+
+    def _collect_system_topic_stream_metrics(self, config: QueueManagerConfig, session: _CollectorSession) -> list[MetricRecord]:
+        records: list[MetricRecord] = []
+        drained = 0
+        max_messages = int(getattr(config.metrics, "system_topic_max_messages_per_poll", 500))
+        topic_object = getattr(config.metrics, "system_topic_root_topic", "SYSTEM.ADMIN.TOPIC")
+
+        for subscription in session.subscriptions:
+            queue = subscription.get_sub_queue()
+            for md, payload in self._drain_queue(queue, config, topic_object, max_messages=max_messages - drained):
+                drained += 1
+                records.extend(self._parse_system_topic_publication(config, md, payload))
+                if drained >= max_messages:
+                    break
+            if drained >= max_messages:
+                break
+
+        records.append(
+            MetricRecord(
+                name=SYSTEM_TOPIC_STREAM_COUNT_SPEC.metric_name,
+                documentation=SYSTEM_TOPIC_STREAM_COUNT_SPEC.help_text,
+                labels={"qmgr": config.name, "topic_object": topic_object},
+                value=float(drained),
+            )
+        )
+        return records
 
     def _collect_admin_queue_metrics(self, config: QueueManagerConfig, qmgr, *, queue_name: str, source_name: str, parser) -> list[MetricRecord]:
         queue = None
@@ -281,14 +632,24 @@ class PyMQICollector:
                 object_name=queue_name,
             ) from exc
 
-    def _drain_queue(self, queue, config: QueueManagerConfig, queue_name: str) -> Iterable[tuple[Any, bytes]]:
+    def _drain_queue(
+        self,
+        queue,
+        config: QueueManagerConfig,
+        queue_name: str,
+        *,
+        max_messages: int | None = None,
+    ) -> Iterable[tuple[Any, bytes]]:
         gmo = self.pymqi.GMO()
         gmo.Options = (
             getattr(self.pymqi.CMQC, "MQGMO_NO_WAIT", 0)
             | getattr(self.pymqi.CMQC, "MQGMO_FAIL_IF_QUIESCING", 0)
             | getattr(self.pymqi.CMQC, "MQGMO_CONVERT", 0)
         )
+        drained = 0
         while True:
+            if max_messages is not None and drained >= max_messages:
+                return
             md = self.pymqi.MD()
             try:
                 payload = queue.get(None, md, gmo)
@@ -302,6 +663,7 @@ class PyMQICollector:
                     object_type="queue",
                     object_name=queue_name,
                 ) from exc
+            drained += 1
             yield md, payload
 
     def _parse_accounting_message(self, config: QueueManagerConfig, queue_name: str, md, payload: bytes) -> list[MetricRecord]:
@@ -311,6 +673,29 @@ class PyMQICollector:
         for group in groups:
             labels = self._message_labels(config, queue_name, md, group)
             for attr_name, spec in ACCOUNTING_SPECS.items():
+                attr_id = self._cmqcfc_value(attr_name)
+                if attr_id is None or attr_id not in group:
+                    continue
+                value = self._coerce_numeric(group[attr_id])
+                if value is None:
+                    continue
+                records.append(
+                    MetricRecord(
+                        name=spec.metric_name,
+                        documentation=spec.help_text,
+                        labels=labels,
+                        value=value,
+                    )
+                )
+        return records
+
+    def _parse_statistics_message(self, config: QueueManagerConfig, queue_name: str, md, payload: bytes) -> list[MetricRecord]:
+        unpacked = self._unpack_pcf_message(config, queue_name, payload, operation="parse statistics message")
+        groups = self._find_group_dicts(unpacked, self._cmqcfc_value("MQGACF_Q_STATISTICS_DATA"))
+        records: list[MetricRecord] = []
+        for group in groups:
+            labels = self._statistics_labels(config, queue_name, group)
+            for attr_name, spec in STATISTICS_SPECS.items():
                 attr_id = self._cmqcfc_value(attr_name)
                 if attr_id is None or attr_id not in group:
                     continue
@@ -350,6 +735,50 @@ class PyMQICollector:
                     value=1.0,
                 )
             )
+        return records
+
+    def _parse_system_topic_publication(self, config: QueueManagerConfig, md, payload: bytes) -> list[MetricRecord]:
+        published_topic = "<unknown>"
+        body = payload
+
+        if self._is_rfh2_message(md, payload):
+            try:
+                rfh2 = self.pymqi.RFH2()
+                rfh2.unpack(payload, getattr(md, "Encoding", None))
+                published_topic = self._extract_rfh2_topic_string(rfh2) or published_topic
+                body = payload[int(rfh2["StrucLength"]):]
+            except Exception:
+                LOG.debug("Failed to parse RFH2 header for system topic publication on %s", config.name, exc_info=True)
+
+        topic_labels = self._system_topic_labels(config, published_topic)
+        records = [
+            MetricRecord(
+                name=SYSTEM_TOPIC_PUBLICATION_COUNT_SPEC.metric_name,
+                documentation=SYSTEM_TOPIC_PUBLICATION_COUNT_SPEC.help_text,
+                labels=topic_labels,
+                value=1.0,
+            ),
+            MetricRecord(
+                name=SYSTEM_TOPIC_PUBLICATION_BYTES_SPEC.metric_name,
+                documentation=SYSTEM_TOPIC_PUBLICATION_BYTES_SPEC.help_text,
+                labels=topic_labels,
+                value=float(len(payload)),
+            ),
+        ]
+
+        if not body:
+            return records
+
+        try:
+            unpacked, _cfh = self.pymqi.PCFExecute.unpack(body)
+        except Exception:
+            LOG.debug("System topic publication body was not decoded as PCF on %s", config.name, exc_info=True)
+            records.extend(self._monitor_discovery_records(topic_labels))
+            return records
+
+        records.extend(self._system_topic_pcf_records(topic_labels, unpacked))
+        records.extend(self._explicit_system_topic_records(topic_labels, unpacked))
+        records.extend(self._normalized_system_topic_records(topic_labels, unpacked))
         return records
 
     def _unpack_pcf_message(self, config: QueueManagerConfig, queue_name: str, payload: bytes, *, operation: str) -> dict[Any, Any]:
@@ -411,14 +840,241 @@ class PyMQICollector:
             group.get(self._cmqcfc_value("MQCACF_FROM_TOPIC_NAME")),
         )
         object_type = self._object_type_name(group.get(self._cmqcfc_value("MQIACF_OBJECT_TYPE")))
-        labels = {
+        return {
             "qmgr": config.name,
             "queue": queue_name,
             "appl_name": appl_name or "<unknown>",
             "object_name": object_name or "<unknown>",
             "object_type": object_type,
         }
-        return labels
+
+    def _statistics_labels(self, config: QueueManagerConfig, queue_name: str, group: dict[Any, Any]) -> dict[str, str]:
+        object_name = self._first_string(
+            group.get(self._cmqcfc_value("MQCACF_OBJECT_NAME")),
+            group.get(self._cmqcfc_value("MQCACF_RESOLVED_Q_NAME")),
+            group.get(self._cmqcfc_value("MQCACF_Q_NAME")),
+        )
+        return {
+            "qmgr": config.name,
+            "queue": queue_name,
+            "object_name": object_name or "<unknown>",
+            "object_type": self._object_type_name(group.get(self._cmqcfc_value("MQIACF_OBJECT_TYPE"))),
+        }
+
+    def _system_topic_labels(self, config: QueueManagerConfig, published_topic: str) -> dict[str, str]:
+        monitor_path = self._parse_monitor_path(published_topic)
+        return {
+            "qmgr": config.name,
+            "published_topic": published_topic,
+            "monitor_class": monitor_path["monitor_class"],
+            "monitor_branch": monitor_path["monitor_branch"],
+            "monitor_leaf": monitor_path["monitor_leaf"],
+        }
+
+    def _system_topic_pcf_records(self, topic_labels: dict[str, str], data: Any, *, context: str = "root") -> list[MetricRecord]:
+        records: list[MetricRecord] = []
+        if isinstance(data, dict):
+            base_labels = dict(topic_labels)
+            base_labels["pcf_context"] = context
+            base_labels["object_name"] = self._first_string(
+                data.get(self._cmqcfc_value("MQCACF_OBJECT_NAME")),
+                data.get(self._cmqcfc_value("MQCACF_Q_NAME")),
+                data.get(self._cmqcfc_value("MQCACF_RESOLVED_Q_NAME")),
+                data.get(self._cmqcfc_value("MQCACF_TOPIC")),
+            ) or "<none>"
+            base_labels["object_type"] = self._object_type_name(data.get(self._cmqcfc_value("MQIACF_OBJECT_TYPE")))
+            base_labels["appl_name"] = self._first_string(data.get(self._cmqcfc_value("MQCACF_APPL_NAME"))) or "<none>"
+
+            for key, value in data.items():
+                selector_name = self._selector_name(key)
+                numeric_value = self._coerce_numeric(value)
+                if selector_name and numeric_value is not None:
+                    records.append(
+                        MetricRecord(
+                            name=f"ibmmq_system_topic_{selector_name.lower()}",
+                            documentation=f"IBM MQ system topic PCF attribute {selector_name} observed on the managed subscription stream.",
+                            labels=base_labels,
+                            value=numeric_value,
+                        )
+                    )
+                next_context = selector_name or context
+                if isinstance(value, (dict, list)):
+                    records.extend(self._system_topic_pcf_records(topic_labels, value, context=next_context))
+        elif isinstance(data, list):
+            for item in data:
+                records.extend(self._system_topic_pcf_records(topic_labels, item, context=context))
+        return records
+
+    def _normalized_system_topic_records(self, topic_labels: dict[str, str], data: Any) -> list[MetricRecord]:
+        monitor_class = topic_labels.get("monitor_class", "<unknown>")
+        if monitor_class not in _SYSTEM_TOPIC_KNOWN_CLASSES:
+            return self._monitor_discovery_records(topic_labels)
+        return self._normalized_system_topic_records_inner(topic_labels, data)
+
+    def _explicit_system_topic_records(self, topic_labels: dict[str, str], data: Any) -> list[MetricRecord]:
+        monitor_class = topic_labels.get("monitor_class", "<unknown>")
+        if monitor_class not in _SYSTEM_TOPIC_KNOWN_CLASSES:
+            return []
+        return self._explicit_system_topic_records_inner(topic_labels, data)
+
+    def _explicit_system_topic_records_inner(self, topic_labels: dict[str, str], data: Any, *, context: str = "root") -> list[MetricRecord]:
+        records: list[MetricRecord] = []
+        if isinstance(data, dict):
+            labels = self._system_topic_metric_labels(topic_labels, data, context)
+            monitor_class = topic_labels["monitor_class"]
+            for key, value in data.items():
+                selector_name = self._selector_name(key)
+                numeric_value = self._coerce_numeric(value)
+                spec = _EXPLICIT_SYSTEM_TOPIC_METRICS.get((monitor_class, selector_name or ""))
+                if spec is not None and numeric_value is not None:
+                    records.append(
+                        MetricRecord(
+                            name=spec.metric_name,
+                            documentation=spec.help_text,
+                            labels=labels,
+                            value=self._scale_explicit_system_topic_value(selector_name, numeric_value),
+                        )
+                    )
+                next_context = selector_name or context
+                if isinstance(value, (dict, list)):
+                    records.extend(self._explicit_system_topic_records_inner(topic_labels, value, context=next_context))
+        elif isinstance(data, list):
+            for item in data:
+                records.extend(self._explicit_system_topic_records_inner(topic_labels, item, context=context))
+        return records
+
+    def _normalized_system_topic_records_inner(self, topic_labels: dict[str, str], data: Any, *, context: str = "root") -> list[MetricRecord]:
+        records: list[MetricRecord] = []
+        if isinstance(data, dict):
+            labels = self._system_topic_metric_labels(topic_labels, data, context)
+            metric_prefix = topic_labels["monitor_class"].lower()
+            for key, value in data.items():
+                selector_name = self._selector_name(key)
+                numeric_value = self._coerce_numeric(value)
+                clean_name = self._clean_selector_name(selector_name)
+                if clean_name and numeric_value is not None:
+                    records.append(
+                        MetricRecord(
+                            name=f"ibmmq_{metric_prefix}_{clean_name}",
+                            documentation=f"IBM MQ {topic_labels['monitor_class']} system-topic metric derived from selector {selector_name}.",
+                            labels=labels,
+                            value=numeric_value,
+                        )
+                    )
+                next_context = selector_name or context
+                if isinstance(value, (dict, list)):
+                    records.extend(self._normalized_system_topic_records_inner(topic_labels, value, context=next_context))
+        elif isinstance(data, list):
+            for item in data:
+                records.extend(self._normalized_system_topic_records_inner(topic_labels, item, context=context))
+        return records
+
+    def _system_topic_metric_labels(self, topic_labels: dict[str, str], data: dict[Any, Any], context: str) -> dict[str, str]:
+        return {
+            "qmgr": topic_labels["qmgr"],
+            "monitor_branch": topic_labels.get("monitor_branch", "<unknown>"),
+            "monitor_leaf": topic_labels.get("monitor_leaf", "<none>"),
+            "pcf_context": context,
+            "object_name": self._first_string(
+                data.get(self._cmqcfc_value("MQCACF_OBJECT_NAME")),
+                data.get(self._cmqcfc_value("MQCACF_Q_NAME")),
+                data.get(self._cmqcfc_value("MQCACF_RESOLVED_Q_NAME")),
+                data.get(self._cmqcfc_value("MQCACF_TOPIC")),
+            ) or "<none>",
+            "object_type": self._object_type_name(data.get(self._cmqcfc_value("MQIACF_OBJECT_TYPE"))),
+            "appl_name": self._first_string(data.get(self._cmqcfc_value("MQCACF_APPL_NAME"))) or "<none>",
+            "monitor_desc": self._first_string(data.get(self._cmqcfc_value("MQCAMO_MONITOR_DESC"))) or "<none>",
+            "monitor_type_desc": self._first_string(data.get(self._cmqcfc_value("MQCAMO_MONITOR_TYPE"))) or "<none>",
+        }
+
+    @staticmethod
+    def _scale_explicit_system_topic_value(selector_name: str | None, numeric_value: float) -> float:
+        if selector_name in _MICROSECOND_SELECTORS:
+            return numeric_value / 1_000_000.0
+        return numeric_value
+
+    def _monitor_discovery_records(self, topic_labels: dict[str, str]) -> list[MetricRecord]:
+        discovery_labels = {
+            "qmgr": topic_labels["qmgr"],
+            "published_topic": topic_labels["published_topic"],
+            "monitor_class": topic_labels.get("monitor_class", "<unknown>"),
+            "monitor_branch": topic_labels.get("monitor_branch", "<unknown>"),
+            "monitor_leaf": topic_labels.get("monitor_leaf", "<none>"),
+        }
+        return [
+            MetricRecord(
+                name="ibmmq_monitor_discovery_publications",
+                documentation="System-topic discovery or unclassified monitoring publications observed during the last poll.",
+                labels=discovery_labels,
+                value=1.0,
+            )
+        ]
+
+    @staticmethod
+    def _parse_monitor_path(published_topic: str) -> dict[str, str]:
+        monitor_class = "<unknown>"
+        monitor_branch = "<unknown>"
+        monitor_leaf = "<none>"
+        marker = "/Monitor/"
+        if marker in published_topic:
+            suffix = published_topic.split(marker, 1)[1]
+            pieces = [piece for piece in suffix.split("/") if piece]
+            if pieces:
+                monitor_class = pieces[0]
+            if len(pieces) > 1:
+                monitor_branch = pieces[1]
+            if len(pieces) > 2:
+                monitor_leaf = "/".join(pieces[2:])
+            elif len(pieces) == 2:
+                monitor_leaf = "<none>"
+        return {
+            "monitor_class": monitor_class,
+            "monitor_branch": monitor_branch,
+            "monitor_leaf": monitor_leaf,
+        }
+
+    def _build_selector_name_map(self) -> dict[int, str]:
+        selector_names: dict[int, str] = {}
+        for namespace in (getattr(self.pymqi, "CMQC", None), getattr(self.pymqi, "CMQCFC", None)):
+            if namespace is None:
+                continue
+            for attr_name in dir(namespace):
+                if not attr_name.startswith("MQ"):
+                    continue
+                value = getattr(namespace, attr_name, None)
+                if isinstance(value, int):
+                    selector_names.setdefault(value, attr_name)
+        return selector_names
+
+    def _selector_name(self, selector: Any) -> str | None:
+        if isinstance(selector, int):
+            return self._selector_names.get(selector)
+        return None
+
+    @staticmethod
+    def _clean_selector_name(selector_name: str | None) -> str | None:
+        if not selector_name:
+            return None
+        cleaned = selector_name
+        for prefix in _SYSTEM_TOPIC_SELECTOR_PREFIXES:
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix):]
+                break
+        return cleaned.lower()
+
+    def _extract_rfh2_topic_string(self, rfh2) -> str:
+        folder = rfh2["mqps"] if "mqps" in rfh2.get() else None
+        if not isinstance(folder, (bytes, bytearray)):
+            return ""
+        root = ElementTree.fromstring(bytes(folder).rstrip())
+        top = root.find("Top")
+        return top.text.strip() if top is not None and top.text else ""
+
+    def _is_rfh2_message(self, md, payload: bytes) -> bool:
+        message_format = getattr(md, "Format", b"")
+        rfh2_format = getattr(self.pymqi.CMQC, "MQFMT_RF_HEADER_2", b"")
+        rfh2_struct_id = getattr(self.pymqi.CMQC, "MQRFH_STRUC_ID", b"RFH ")
+        return message_format == rfh2_format or payload.startswith(rfh2_struct_id)
 
     def _cmqcfc_value(self, attr_name: str) -> int | None:
         return getattr(self.pymqi.CMQCFC, attr_name, None)
@@ -446,14 +1102,9 @@ class PyMQICollector:
     @staticmethod
     def _first_string(*values: Any) -> str:
         for value in values:
-            if isinstance(value, bytes):
-                text = value.decode("utf-8", errors="ignore").strip(" \x00")
-                if text:
-                    return text
-            elif isinstance(value, str):
-                text = value.strip(" \x00")
-                if text:
-                    return text
+            text = PyMQICollector._normalize_mq_string(value)
+            if text:
+                return text
         return ""
 
     @staticmethod
@@ -462,7 +1113,26 @@ class PyMQICollector:
             return 1.0 if value else 0.0
         if isinstance(value, (int, float)):
             return float(value)
+        if isinstance(value, (list, tuple)):
+            total = 0.0
+            saw_numeric = False
+            for item in value:
+                numeric = PyMQICollector._coerce_numeric(item)
+                if numeric is None:
+                    continue
+                total += numeric
+                saw_numeric = True
+            if saw_numeric:
+                return total
         return None
+
+    @staticmethod
+    def _normalize_mq_string(value: Any) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="ignore").strip(" \x00")
+        if isinstance(value, str):
+            return value.strip(" \x00")
+        return ""
 
     def _call_pcf(
         self,

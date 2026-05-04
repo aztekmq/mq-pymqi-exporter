@@ -44,8 +44,16 @@ class ConfigTests(unittest.TestCase):
                   channel: DEV.APP.SVRCONN
                   conn_name: localhost(1415)
                 metrics:
+                  include_topics: true
                   include_accounting: true
+                  include_statistics: true
                   include_activity_trace: true
+                  include_system_topic_stream: true
+                  topic_patterns:
+                    - SYSTEM.ADMIN.TOPIC
+                  system_topic_subscription_patterns:
+                    - INFO/QMGR/{qmgr}/#
+                  system_topic_max_messages_per_poll: 25
                 """
             ).strip(),
             encoding="utf-8",
@@ -57,8 +65,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.worker_pool.max_threads, 50)
         self.assertEqual(len(config.queue_managers), 1)
         self.assertEqual(config.queue_managers[0].poll_interval_seconds, 15.0)
+        self.assertTrue(config.queue_managers[0].metrics.include_topics)
         self.assertTrue(config.queue_managers[0].metrics.include_accounting)
+        self.assertTrue(config.queue_managers[0].metrics.include_statistics)
         self.assertTrue(config.queue_managers[0].metrics.include_activity_trace)
+        self.assertTrue(config.queue_managers[0].metrics.include_system_topic_stream)
+        self.assertEqual(config.queue_managers[0].metrics.system_topic_subscription_patterns, ("INFO/QMGR/{qmgr}/#",))
+        self.assertEqual(config.queue_managers[0].metrics.system_topic_max_messages_per_poll, 25)
 
 
 if __name__ == "__main__":
