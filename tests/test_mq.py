@@ -69,7 +69,7 @@ class _FakeRFH2:
     def unpack(self, _payload, _encoding=None) -> None:
         self._values = {
             "StrucLength": 8,
-            "mqps": b"<mqps><Top>$SYS/MQ/INFO/QMGR/QM1/Monitor/STATQ/Queue/APP.REQUEST</Top></mqps>",
+            "mqps": b"<mqps><Top>$SYS/MQ/INFO/QMGR/QM1/Monitor/STATQ/APP.REQUEST/PUT</Top></mqps>",
         }
 
     def __getitem__(self, key):
@@ -116,6 +116,14 @@ class _FakeStatappRFH2(_FakeRFH2):
         self._values = {
             "StrucLength": 8,
             "mqps": b"<mqps><Top>$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/DEPT1&amp;APPS&amp;STOCKQUOTE/PUT</Top></mqps>",
+        }
+
+
+class _FakeBrokenRFH2(_FakeRFH2):
+    def unpack(self, _payload, _encoding=None) -> None:
+        self._values = {
+            "StrucLength": 8,
+            "mqps": b"<mqps><Top>$SYS/MQ/INFO/QMGR/QM1/Monitor/CPU/QMgrSummary",
         }
 
 
@@ -408,23 +416,19 @@ class MQCollectorTests(unittest.TestCase):
             by_name.setdefault(record.name, []).append(record)
 
         publication = by_name["ibmmq_system_topic_publications"][0]
-        self.assertEqual(publication.labels["published_topic"], "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATQ/Queue/APP.REQUEST")
+        self.assertEqual(publication.labels["published_topic"], "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATQ/APP.REQUEST/PUT")
         self.assertEqual(publication.labels["monitor_class"], "STATQ")
-        self.assertEqual(publication.labels["monitor_branch"], "Queue")
-        self.assertEqual(publication.labels["monitor_leaf"], "APP.REQUEST")
-
-        pcf_metric = by_name["ibmmq_system_topic_mqiamo_puts"][0]
-        self.assertEqual(pcf_metric.labels["object_name"], "APP.REQUEST")
-        self.assertEqual(pcf_metric.labels["object_type"], "MQOT_Q")
-        self.assertEqual(pcf_metric.value, 5.0)
-
-        normalized_metric = by_name["ibmmq_statq_puts"][0]
-        self.assertEqual(normalized_metric.labels["monitor_branch"], "Queue")
-        self.assertEqual(normalized_metric.labels["monitor_leaf"], "APP.REQUEST")
-        self.assertEqual(normalized_metric.value, 5.0)
+        self.assertEqual(publication.labels["requested_class"], "STATQ")
+        self.assertEqual(publication.labels["requested_type"], "PUT")
+        self.assertEqual(publication.labels["requested_object_name"], "APP.REQUEST")
+        self.assertNotIn("monitor_branch", publication.labels)
+        self.assertNotIn("monitor_leaf", publication.labels)
 
         explicit_metric = by_name["ibmmq_statq_messages_put_total"][0]
         self.assertEqual(explicit_metric.value, 5.0)
+        self.assertEqual(explicit_metric.labels["requested_class"], "STATQ")
+        self.assertEqual(explicit_metric.labels["requested_type"], "PUT")
+        self.assertEqual(explicit_metric.labels["requested_object_name"], "APP.REQUEST")
 
         open_metric = by_name["ibmmq_statq_mqopen_total"][0]
         self.assertEqual(open_metric.value, 3.0)
@@ -529,6 +533,8 @@ class MQCollectorTests(unittest.TestCase):
         self.assertEqual(cpu_metric.value, 62.0)
         self.assertEqual(cpu_metric.labels["monitor_desc"], "User CPU time percentage")
         self.assertEqual(cpu_metric.labels["monitor_type_desc"], "SystemSummary")
+        amqsrua_metric = [record for record in records if record.name == "ibmmq_amqsrua_user_cpu_time_percentage_percent"][0]
+        self.assertEqual(amqsrua_metric.value, 0.62)
 
     def test_system_topic_publication_generates_statq_search_diagnostic_metrics(self) -> None:
         collector = self._collector_with_admin_pcf(
@@ -583,7 +589,10 @@ class MQCollectorTests(unittest.TestCase):
 
         metric = [record for record in records if record.name == "ibmmq_qmgr_log_physical_bytes_written_total"][0]
         self.assertEqual(metric.value, 9000000.0)
-        self.assertEqual(metric.labels["monitor_branch"], "Log")
+        self.assertEqual(metric.labels["requested_class"], "DISK")
+        self.assertEqual(metric.labels["requested_type"], "Log")
+        amqsrua_bytes_metric = [record for record in records if record.name == "ibmmq_amqsrua_log_physical_bytes_written_bytes"][0]
+        self.assertEqual(amqsrua_bytes_metric.value, 9000000.0)
 
     def test_system_topic_publication_decodes_statapp_topic_token_to_application_name(self) -> None:
         collector = self._collector_with_admin_pcf({735: 7})
@@ -606,11 +615,50 @@ class MQCollectorTests(unittest.TestCase):
         self.assertEqual(publication.labels["statapp_topic_token"], "DEPT1&APPS&STOCKQUOTE")
         self.assertEqual(publication.labels["statapp_appl_name"], "DEPT1/APPS/STOCKQUOTE")
         self.assertEqual(publication.labels["statapp_type"], "PUT")
+        self.assertEqual(publication.labels["requested_object_name"], "DEPT1&APPS&STOCKQUOTE")
+        self.assertEqual(publication.labels["requested_type"], "PUT")
 
         explicit = [record for record in records if record.name == "ibmmq_statapp_messages_put_total"][0]
         self.assertEqual(explicit.labels["statapp_topic_token"], "DEPT1&APPS&STOCKQUOTE")
         self.assertEqual(explicit.labels["statapp_appl_name"], "DEPT1/APPS/STOCKQUOTE")
         self.assertEqual(explicit.labels["statapp_type"], "PUT")
+
+    def test_system_topic_publication_uses_subscription_topic_when_rfh2_topic_cannot_be_extracted(self) -> None:
+        collector = self._collector_with_admin_pcf({10000: 62, 3065: b"User CPU time percentage", 3066: b"QMgrSummary"})
+        collector.pymqi.RFH2 = _FakeBrokenRFH2
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+        )
+
+        records = collector._parse_system_topic_publication(
+            config,
+            types.SimpleNamespace(Format=b"MQHRF2  ", Encoding=273),
+            b"RFH bodypcf",
+            fallback_topic="$SYS/MQ/INFO/QMGR/QM1/Monitor/CPU/QMgrSummary",
+        )
+
+        publication = [record for record in records if record.name == "ibmmq_system_topic_publications"][0]
+        self.assertEqual(publication.labels["published_topic"], "$SYS/MQ/INFO/QMGR/QM1/Monitor/CPU/QMgrSummary")
+        self.assertEqual(publication.labels["monitor_class"], "CPU")
+        self.assertEqual(publication.labels["requested_class"], "CPU")
+        self.assertEqual(publication.labels["requested_type"], "QMgrSummary")
+        self.assertEqual(publication.labels["requested_object_name"], "<none>")
+        self.assertNotIn("monitor_branch", publication.labels)
+
+    def test_build_selector_name_map_prefers_monitor_selectors_over_unrelated_constant_names(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector.pymqi = types.SimpleNamespace(
+            CMQC=types.SimpleNamespace(MQAT_WINDOWS=10000),
+            CMQCFC=types.SimpleNamespace(MQIAMO_MONITOR_PERCENT=10000),
+        )
+
+        selector_names = collector._build_selector_name_map()
+
+        self.assertEqual(selector_names[10000], "MQIAMO_MONITOR_PERCENT")
 
     def test_subscription_topic_for_monitor_type_replaces_object_placeholder_with_single_level_wildcard(self) -> None:
         value = PyMQICollector._subscription_topic_for_monitor_type(
@@ -773,6 +821,61 @@ class MQCollectorTests(unittest.TestCase):
         self.assertEqual(calls, ["stale", "fresh"])
         self.assertEqual(invalidated, ["QM1"])
         self.assertEqual(records[0].name, "ok")
+
+    def test_connect_reuses_qmgr_when_pymqi_returns_already_connected_warning(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+
+        class _FakeQueueManager:
+            def __init__(self, _name) -> None:
+                self.connected = False
+
+            def connect_tcp_client(self, *args) -> None:
+                self.connected = True
+                raise _FakeMQMIError(1, 2002)
+
+            def disconnect(self) -> None:
+                self.connected = False
+
+        collector.pymqi = types.SimpleNamespace(
+            QueueManager=_FakeQueueManager,
+            CD=lambda: object(),
+            CMQC=types.SimpleNamespace(MQRC_ALREADY_CONNECTED=2002),
+            MQMIError=_FakeMQMIError,
+        )
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+        )
+
+        qmgr = collector._connect(config)
+
+        self.assertTrue(qmgr.connected)
+
+    def test_get_or_create_session_uses_separate_stream_connection_for_system_topic_stream(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector._session_lock = threading.Lock()
+        collector._sessions = {}
+        connects = ["poll-qmgr", "stream-qmgr"]
+        collector._connect = lambda config: connects.pop(0)
+        collector._open_system_topic_subscriptions = lambda config, qmgr: [f"sub-on-{qmgr}"]
+        collector._disconnect_qmgr = lambda qmgr, qmgr_name: None
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+            metrics=MetricsConfig(include_system_topic_stream=True),
+        )
+
+        session = collector._get_or_create_session(config)
+
+        self.assertEqual(session.qmgr, "poll-qmgr")
+        self.assertEqual(session.stream_qmgr, "stream-qmgr")
+        self.assertEqual(session.subscriptions, ["sub-on-stream-qmgr"])
 
     def test_classify_system_topic_diagnostic_outcomes(self) -> None:
         collector = PyMQICollector.__new__(PyMQICollector)

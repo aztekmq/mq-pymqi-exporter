@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import html
 import logging
 from collections.abc import Iterable
 from threading import RLock
 import time
 from typing import Any
 from xml.etree import ElementTree
+import re
 
 from .config import QueueManagerConfig
 from .metrics import MetricRecord
@@ -31,6 +33,7 @@ class _DescriptorMetricSpec:
 @dataclass
 class _CollectorSession:
     qmgr: Any
+    stream_qmgr: Any | None
     subscriptions: list[Any]
 
 
@@ -147,6 +150,31 @@ _DIRECT_SYSTEM_TOPIC_TYPES: tuple[tuple[str, str | None, str], ...] = (
     ("STATAPP", None, "GET"),
     ("STATAPP", None, "BROWSE"),
 )
+
+_AMQSRUA_DESCRIPTOR_MAP: dict[tuple[str, str], tuple[str, str]] = {
+    ("CPU", "user cpu time percentage estimate for queue manager"): ("User CPU time - percentage estimate for queue manager", "percent_hundredths"),
+    ("CPU", "system cpu time percentage estimate for queue manager"): ("System CPU time - percentage estimate for queue manager", "percent_hundredths"),
+    ("CPU", "ram total bytes estimate for queue manager"): ("RAM total bytes - estimate for queue manager", "mb"),
+    ("CPU", "user cpu time percentage"): ("User CPU time percentage", "percent_hundredths"),
+    ("CPU", "system cpu time percentage"): ("System CPU time percentage", "percent_hundredths"),
+    ("CPU", "cpu load one minute average"): ("CPU load - one minute average", "hundredths"),
+    ("CPU", "cpu load five minute average"): ("CPU load - five minute average", "hundredths"),
+    ("CPU", "cpu load fifteen minute average"): ("CPU load - fifteen minute average", "hundredths"),
+    ("CPU", "ram free percentage"): ("RAM free percentage", "percent_hundredths"),
+    ("CPU", "ram total bytes"): ("RAM total bytes", "mb"),
+    ("DISK", "log bytes in use"): ("Log - bytes in use", "bytes"),
+    ("DISK", "log bytes max"): ("Log - bytes max", "bytes"),
+    ("DISK", "log file system bytes in use"): ("Log file system - bytes in use", "bytes"),
+    ("DISK", "log file system bytes max"): ("Log file system - bytes max", "bytes"),
+    ("DISK", "log physical bytes written"): ("Log - physical bytes written", "delta_bytes_rate"),
+    ("DISK", "log physical bytes written for the current interval"): ("Log - physical bytes written", "delta_bytes_rate"),
+    ("DISK", "log logical bytes written"): ("Log - logical bytes written", "delta_bytes_rate"),
+    ("DISK", "log logical bytes written for the current interval"): ("Log - logical bytes written", "delta_bytes_rate"),
+    ("DISK", "log write latency"): ("Log - write latency", "microseconds"),
+    ("DISK", "log current primary space in use"): ("Log - current primary space in use", "percent_hundredths"),
+    ("DISK", "log workload primary space utilization"): ("Log - workload primary space utilization", "percent_hundredths"),
+    ("DISK", "log write size"): ("Log - write size", "bytes"),
+}
 _SYSTEM_TOPIC_SELECTOR_PREFIXES = (
     "MQIAMO64_",
     "MQIAMO_",
@@ -156,6 +184,18 @@ _SYSTEM_TOPIC_SELECTOR_PREFIXES = (
     "MQIA_",
     "MQCA_",
 )
+
+_SELECTOR_NAME_PRIORITY_PREFIXES = (
+    "MQIAMO64_",
+    "MQIAMO_",
+    "MQCAMO_",
+    "MQCACF_",
+    "MQIACF_",
+    "MQIA_",
+    "MQCA_",
+)
+
+_RFH2_TOP_RE = re.compile(r"<Top>(.*?)</Top>", re.IGNORECASE | re.DOTALL)
 
 _MICROSECOND_SELECTORS = {
     "MQIAMO64_MONITOR_INTERVAL",
@@ -563,19 +603,19 @@ class PyMQICollector:
                 return session
 
         qmgr = self._connect(config)
+        stream_qmgr = None
         subscriptions: list[Any] = []
         try:
             if getattr(config.metrics, "include_system_topic_stream", False):
-                self._run_system_topic_startup_probe(config, qmgr)
-                subscriptions = self._open_system_topic_subscriptions(config, qmgr)
+                stream_qmgr = self._connect(config)
+                subscriptions = self._open_system_topic_subscriptions(config, stream_qmgr)
         except Exception:
-            try:
-                qmgr.disconnect()
-            except Exception:
-                LOG.debug("Disconnect failed while tearing down partial session for %s", config.name, exc_info=True)
+            if stream_qmgr is not None:
+                self._disconnect_qmgr(stream_qmgr, f"{config.name}/stream")
+            self._disconnect_qmgr(qmgr, config.name)
             raise
 
-        session = _CollectorSession(qmgr=qmgr, subscriptions=subscriptions)
+        session = _CollectorSession(qmgr=qmgr, stream_qmgr=stream_qmgr, subscriptions=subscriptions)
         with self._session_lock:
             self._sessions[config.name] = session
         return session
@@ -592,22 +632,34 @@ class PyMQICollector:
             except Exception:
                 LOG.debug("Subscription close failed for %s", qmgr_name, exc_info=True)
 
-        try:
-            session.qmgr.disconnect()
-        except Exception:
-            LOG.debug("Disconnect failed for %s", qmgr_name, exc_info=True)
+        if session.stream_qmgr is not None:
+            self._disconnect_qmgr(session.stream_qmgr, f"{qmgr_name}/stream")
+        self._disconnect_qmgr(session.qmgr, qmgr_name)
 
     def _connect(self, config: QueueManagerConfig):
         password = config.connection.resolved_password()
+        qmgr = self.pymqi.QueueManager(None)
         try:
-            return self.pymqi.connect(
-                config.connection.queue_manager,
-                config.connection.channel,
-                config.connection.conn_name,
-                config.connection.user,
-                password,
-            )
+            if config.connection.channel and config.connection.conn_name:
+                qmgr.connect_tcp_client(
+                    config.connection.queue_manager or "",
+                    self.pymqi.CD(),
+                    config.connection.channel,
+                    config.connection.conn_name,
+                    config.connection.user,
+                    password,
+                )
+            else:
+                qmgr.connect_with_options(config.connection.queue_manager or "")
+            return qmgr
         except self.pymqi.MQMIError as exc:
+            if getattr(exc, "reason", None) == getattr(self.pymqi.CMQC, "MQRC_ALREADY_CONNECTED", 2002):
+                LOG.warning(
+                    "IBM MQ returned MQRC_ALREADY_CONNECTED while connecting %s; reusing the connected QueueManager handle.",
+                    config.name,
+                )
+                return qmgr
+            self._disconnect_qmgr(qmgr, config.name)
             raise self._build_mq_error(
                 config,
                 exc,
@@ -615,6 +667,12 @@ class PyMQICollector:
                 object_type="queue manager",
                 object_name=config.connection.queue_manager,
             ) from exc
+
+    def _disconnect_qmgr(self, qmgr, qmgr_name: str) -> None:
+        try:
+            qmgr.disconnect()
+        except Exception:
+            LOG.debug("Disconnect failed for %s", qmgr_name, exc_info=True)
 
     def _is_reconnectable_session_error(self, exc: Exception) -> bool:
         reconnect_reason_codes = {
@@ -644,6 +702,7 @@ class PyMQICollector:
             try:
                 subscription = self.pymqi.Subscription(qmgr)
                 subscription.sub(**kwargs)
+                setattr(subscription, "_exporter_topic_string", pattern)
                 if subscription.get_sub_queue() is None:
                     raise RuntimeError(f"Managed subscription queue was not created for topic pattern {pattern!r}")
                 subscriptions.append(subscription)
@@ -669,6 +728,14 @@ class PyMQICollector:
                 continue
             seen.add(topic_string)
             topics.append(topic_string)
+        if topics:
+            if self._system_topic_diagnostics_enabled(config):
+                LOG.info(
+                    "System-topic direct subscription plan for %s: using %d amqsrua.py-style concrete topic strings.",
+                    config.name,
+                    len(topics),
+                )
+            return tuple(topics)
         no_msg_reason = getattr(self.pymqi.CMQC, "MQRC_NO_MSG_AVAILABLE", 2033)
         try:
             monitor_types = self._discover_monitor_types(config, qmgr)
@@ -1270,9 +1337,10 @@ class PyMQICollector:
                 raise MQCollectionError(
                     f"IBM MQ managed subscription queue was not available for {config.name}; topic_object={topic_object!r}"
                 )
+            fallback_topic = getattr(subscription, "_exporter_topic_string", "")
             for md, payload in self._drain_queue(queue, config, topic_object, max_messages=max_messages - drained):
                 drained += 1
-                records.extend(self._parse_system_topic_publication(config, md, payload))
+                records.extend(self._parse_system_topic_publication(config, md, payload, fallback_topic=fallback_topic))
                 if drained >= max_messages:
                     break
             if drained >= max_messages:
@@ -1459,7 +1527,7 @@ class PyMQICollector:
             )
         return records
 
-    def _parse_system_topic_publication(self, config: QueueManagerConfig, md, payload: bytes) -> list[MetricRecord]:
+    def _parse_system_topic_publication(self, config: QueueManagerConfig, md, payload: bytes, *, fallback_topic: str = "") -> list[MetricRecord]:
         published_topic = "<unknown>"
         body = payload
 
@@ -1471,6 +1539,8 @@ class PyMQICollector:
                 body = payload[int(rfh2["StrucLength"]):]
             except Exception:
                 LOG.debug("Failed to parse RFH2 header for system topic publication on %s", config.name, exc_info=True)
+        if published_topic == "<unknown>" and fallback_topic:
+            published_topic = fallback_topic
 
         topic_labels = self._system_topic_labels(config, published_topic)
         records = [
@@ -1499,6 +1569,7 @@ class PyMQICollector:
             return records
 
         records.extend(self._system_topic_pcf_records(topic_labels, unpacked))
+        records.extend(self._amqsrua_style_system_topic_records(topic_labels, unpacked))
         records.extend(self._explicit_system_topic_records(topic_labels, unpacked))
         records.extend(self._normalized_system_topic_records(topic_labels, unpacked))
         return records
@@ -1589,8 +1660,9 @@ class PyMQICollector:
             "qmgr": config.name,
             "published_topic": published_topic,
             "monitor_class": monitor_path["monitor_class"],
-            "monitor_branch": monitor_path["monitor_branch"],
-            "monitor_leaf": monitor_path["monitor_leaf"],
+            "requested_class": monitor_path["requested_class"],
+            "requested_type": monitor_path["requested_type"],
+            "requested_object_name": monitor_path["requested_object_name"],
         }
         if monitor_path["monitor_class"] == "STATAPP":
             labels["statapp_topic_token"] = monitor_path["monitor_branch"]
@@ -1599,6 +1671,8 @@ class PyMQICollector:
         return labels
 
     def _system_topic_pcf_records(self, topic_labels: dict[str, str], data: Any, *, context: str = "root") -> list[MetricRecord]:
+        if topic_labels.get("monitor_class") in _SYSTEM_TOPIC_KNOWN_CLASSES:
+            return []
         records: list[MetricRecord] = []
         if isinstance(data, dict):
             base_labels = dict(topic_labels)
@@ -1636,13 +1710,45 @@ class PyMQICollector:
         monitor_class = topic_labels.get("monitor_class", "<unknown>")
         if monitor_class not in _SYSTEM_TOPIC_KNOWN_CLASSES:
             return self._monitor_discovery_records(topic_labels)
-        return self._normalized_system_topic_records_inner(topic_labels, data)
+        return []
 
     def _explicit_system_topic_records(self, topic_labels: dict[str, str], data: Any) -> list[MetricRecord]:
         monitor_class = topic_labels.get("monitor_class", "<unknown>")
         if monitor_class not in _SYSTEM_TOPIC_KNOWN_CLASSES:
             return []
         return self._explicit_system_topic_records_inner(topic_labels, data)
+
+    def _amqsrua_style_system_topic_records(self, topic_labels: dict[str, str], data: Any, *, context: str = "root") -> list[MetricRecord]:
+        monitor_class = topic_labels.get("monitor_class", "<unknown>")
+        if monitor_class not in {"CPU", "DISK"}:
+            return []
+        records: list[MetricRecord] = []
+        if isinstance(data, dict):
+            labels = self._system_topic_metric_labels(topic_labels, data, context)
+            interval_seconds = self._selector_value_by_name(data, "MQIAMO64_MONITOR_INTERVAL")
+            interval_microseconds = int(interval_seconds) if interval_seconds is not None else None
+            desc_key = self._normalize_monitor_descriptor(labels.get("monitor_desc", "<none>"))
+            metric_def = _AMQSRUA_DESCRIPTOR_MAP.get((monitor_class, desc_key))
+            numeric_value = self._first_non_metadata_numeric_value(data)
+            if metric_def is not None and numeric_value is not None:
+                metric_desc, value_kind = metric_def
+                for metric_name, metric_value in self._amqsrua_metric_records(metric_desc, value_kind, numeric_value, interval_microseconds):
+                    records.append(
+                        MetricRecord(
+                            name=metric_name,
+                            documentation=f"IBM MQ AMQSRUA-style metric: {metric_desc}.",
+                            labels=labels,
+                            value=metric_value,
+                        )
+                    )
+            for key, value in data.items():
+                next_context = self._selector_name(key) or context
+                if isinstance(value, (dict, list)):
+                    records.extend(self._amqsrua_style_system_topic_records(topic_labels, value, context=next_context))
+        elif isinstance(data, list):
+            for item in data:
+                records.extend(self._amqsrua_style_system_topic_records(topic_labels, item, context=context))
+        return records
 
     def _explicit_system_topic_records_inner(self, topic_labels: dict[str, str], data: Any, *, context: str = "root") -> list[MetricRecord]:
         records: list[MetricRecord] = []
@@ -1707,21 +1813,23 @@ class PyMQICollector:
         return records
 
     def _system_topic_metric_labels(self, topic_labels: dict[str, str], data: dict[Any, Any], context: str) -> dict[str, str]:
+        topic_object_name = self._topic_derived_object_name(topic_labels)
         labels = {
             "qmgr": topic_labels["qmgr"],
-            "monitor_branch": topic_labels.get("monitor_branch", "<unknown>"),
-            "monitor_leaf": topic_labels.get("monitor_leaf", "<none>"),
+            "requested_class": topic_labels.get("requested_class", topic_labels.get("monitor_class", "<unknown>")),
+            "requested_type": topic_labels.get("requested_type", "<none>"),
+            "requested_object_name": topic_object_name,
             "pcf_context": context,
             "object_name": self._first_string(
                 data.get(self._cmqcfc_value("MQCACF_OBJECT_NAME")),
                 data.get(self._cmqcfc_value("MQCACF_Q_NAME")),
                 data.get(self._cmqcfc_value("MQCACF_RESOLVED_Q_NAME")),
                 data.get(self._cmqcfc_value("MQCACF_TOPIC")),
-            ) or "<none>",
-            "object_type": self._object_type_name(data.get(self._cmqcfc_value("MQIACF_OBJECT_TYPE"))),
+            ) or topic_object_name or "<none>",
+            "object_type": self._object_type_name(data.get(self._cmqcfc_value("MQIACF_OBJECT_TYPE"))) if data.get(self._cmqcfc_value("MQIACF_OBJECT_TYPE")) is not None else self._topic_derived_object_type(topic_labels),
             "appl_name": self._first_string(data.get(self._cmqcfc_value("MQCACF_APPL_NAME"))) or "<none>",
             "monitor_desc": self._first_string(data.get(self._cmqcfc_value("MQCAMO_MONITOR_DESC"))) or "<none>",
-            "monitor_type_desc": self._first_string(data.get(self._cmqcfc_value("MQCAMO_MONITOR_TYPE"))) or "<none>",
+            "monitor_type_desc": self._first_string(data.get(self._cmqcfc_value("MQCAMO_MONITOR_TYPE"))) or self._monitor_type_from_topic_labels(topic_labels),
         }
         if "statapp_topic_token" in topic_labels:
             labels["statapp_topic_token"] = topic_labels["statapp_topic_token"]
@@ -1730,10 +1838,64 @@ class PyMQICollector:
         return labels
 
     @staticmethod
+    def _topic_derived_object_name(topic_labels: dict[str, str]) -> str:
+        requested_object_name = topic_labels.get("requested_object_name", "<none>")
+        if requested_object_name != "<none>":
+            return requested_object_name
+        monitor_class = topic_labels.get("monitor_class", "<unknown>")
+        monitor_branch = topic_labels.get("monitor_branch", "<unknown>")
+        if monitor_class == "STATQ":
+            return monitor_branch
+        if monitor_class == "STATAPP":
+            return topic_labels.get("statapp_appl_name", "<none>")
+        return "<none>"
+
+    @staticmethod
+    def _topic_derived_object_type(topic_labels: dict[str, str]) -> str:
+        monitor_class = topic_labels.get("monitor_class", "<unknown>")
+        if monitor_class == "STATQ":
+            return "MQOT_Q"
+        if monitor_class == "STATAPP":
+            return "MQOT_TOPIC"
+        return "<unknown>"
+
+    @staticmethod
     def _decode_statapp_topic_token(topic_token: str) -> str:
         if not topic_token or topic_token == "<none>":
             return "<none>"
         return topic_token.replace("&", "/")
+
+    @staticmethod
+    def _monitor_type_from_topic_labels(topic_labels: dict[str, str]) -> str:
+        monitor_class = topic_labels.get("monitor_class", "<unknown>")
+        monitor_branch = topic_labels.get("monitor_branch", "<unknown>")
+        monitor_leaf = topic_labels.get("monitor_leaf", "<none>")
+        if monitor_class in {"STATQ", "STATAPP"}:
+            return monitor_leaf
+        if monitor_leaf != "<none>":
+            return monitor_leaf
+        return monitor_branch
+
+    @staticmethod
+    def _amqsrua_metric_records(metric_desc: str, value_kind: str, numeric_value: float, interval_microseconds: int | None) -> list[tuple[str, float]]:
+        metric_key = PyMQICollector._normalize_monitor_descriptor(metric_desc).replace(" ", "_")
+        if value_kind == "percent_hundredths":
+            return [(f"ibmmq_amqsrua_{metric_key}_percent", numeric_value / 100.0)]
+        if value_kind == "hundredths":
+            return [(f"ibmmq_amqsrua_{metric_key}", numeric_value / 100.0)]
+        if value_kind == "mb":
+            return [(f"ibmmq_amqsrua_{metric_key}_mb", numeric_value)]
+        if value_kind == "bytes":
+            return [(f"ibmmq_amqsrua_{metric_key}_bytes", numeric_value)]
+        if value_kind == "microseconds":
+            return [(f"ibmmq_amqsrua_{metric_key}_microseconds", numeric_value)]
+        if value_kind == "delta_bytes_rate":
+            records = [(f"ibmmq_amqsrua_{metric_key}_bytes", numeric_value)]
+            if interval_microseconds and interval_microseconds >= 10000:
+                rate = int((numeric_value * 1_000_000 + (interval_microseconds / 2)) // interval_microseconds)
+                records.append((f"ibmmq_amqsrua_{metric_key}_per_second", float(rate)))
+            return records
+        return [(f"ibmmq_amqsrua_{metric_key}", numeric_value)]
 
     def _descriptor_metric_match(
         self,
@@ -1803,8 +1965,9 @@ class PyMQICollector:
             "qmgr": topic_labels["qmgr"],
             "published_topic": topic_labels["published_topic"],
             "monitor_class": topic_labels.get("monitor_class", "<unknown>"),
-            "monitor_branch": topic_labels.get("monitor_branch", "<unknown>"),
-            "monitor_leaf": topic_labels.get("monitor_leaf", "<none>"),
+            "requested_class": topic_labels.get("requested_class", "<unknown>"),
+            "requested_type": topic_labels.get("requested_type", "<none>"),
+            "requested_object_name": topic_labels.get("requested_object_name", "<none>"),
         }
         return [
             MetricRecord(
@@ -1820,20 +1983,35 @@ class PyMQICollector:
         monitor_class = "<unknown>"
         monitor_branch = "<unknown>"
         monitor_leaf = "<none>"
+        requested_class = "<unknown>"
+        requested_type = "<none>"
+        requested_object_name = "<none>"
         marker = "/Monitor/"
         if marker in published_topic:
             suffix = published_topic.split(marker, 1)[1]
             pieces = [piece for piece in suffix.split("/") if piece]
             if pieces:
                 monitor_class = pieces[0]
+                requested_class = pieces[0]
             if len(pieces) > 1:
                 monitor_branch = pieces[1]
             if len(pieces) > 2:
                 monitor_leaf = "/".join(pieces[2:])
             elif len(pieces) == 2:
                 monitor_leaf = "<none>"
+            if monitor_class in {"STATQ", "STATAPP"}:
+                if len(pieces) > 1:
+                    requested_object_name = pieces[1]
+                if len(pieces) > 2:
+                    requested_type = "/".join(pieces[2:])
+            else:
+                if len(pieces) > 1:
+                    requested_type = pieces[1]
         return {
             "monitor_class": monitor_class,
+            "requested_class": requested_class,
+            "requested_type": requested_type,
+            "requested_object_name": requested_object_name,
             "monitor_branch": monitor_branch,
             "monitor_leaf": monitor_leaf,
         }
@@ -1843,12 +2021,22 @@ class PyMQICollector:
         for namespace in (getattr(self.pymqi, "CMQC", None), getattr(self.pymqi, "CMQCFC", None)):
             if namespace is None:
                 continue
-            for attr_name in dir(namespace):
-                if not attr_name.startswith("MQ"):
-                    continue
+            prioritized_names = [
+                attr_name
+                for attr_name in dir(namespace)
+                if attr_name.startswith("MQ") and attr_name.startswith(_SELECTOR_NAME_PRIORITY_PREFIXES)
+            ]
+            fallback_names = [
+                attr_name
+                for attr_name in dir(namespace)
+                if attr_name.startswith("MQ") and attr_name not in prioritized_names
+            ]
+            ordered_names = prioritized_names + fallback_names
+            for attr_name in ordered_names:
                 value = getattr(namespace, attr_name, None)
                 if isinstance(value, int):
-                    selector_names.setdefault(value, attr_name)
+                    if value not in selector_names or attr_name.startswith(_SELECTOR_NAME_PRIORITY_PREFIXES):
+                        selector_names[value] = attr_name
         return selector_names
 
     def _selector_name(self, selector: Any) -> str | None:
@@ -1869,11 +2057,30 @@ class PyMQICollector:
 
     def _extract_rfh2_topic_string(self, rfh2) -> str:
         folder = rfh2["mqps"] if "mqps" in rfh2.get() else None
-        if not isinstance(folder, (bytes, bytearray)):
+        if isinstance(folder, str):
+            folder_text = folder
+        elif isinstance(folder, (bytes, bytearray)):
+            folder_text = bytes(folder).decode("utf-8", errors="ignore").rstrip("\x00\r\n ")
+        else:
             return ""
-        root = ElementTree.fromstring(bytes(folder).rstrip())
-        top = root.find("Top")
-        return top.text.strip() if top is not None and top.text else ""
+        if not folder_text:
+            return ""
+        try:
+            root = ElementTree.fromstring(folder_text)
+            top = root.find("Top")
+            if top is None:
+                for element in root.iter():
+                    if element.tag.endswith("Top"):
+                        top = element
+                        break
+            if top is not None and top.text:
+                return html.unescape(top.text.strip())
+        except Exception:
+            match = _RFH2_TOP_RE.search(folder_text)
+            if match:
+                return html.unescape(match.group(1).strip())
+            raise
+        return ""
 
     def _is_rfh2_message(self, md, payload: bytes) -> bool:
         message_format = getattr(md, "Format", b"")
