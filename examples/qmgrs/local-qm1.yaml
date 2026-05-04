@@ -25,7 +25,7 @@ metrics:
   topic_patterns:
     - SYSTEM.ADMIN.TOPIC
   system_topic_subscription_patterns:
-    - INFO/QMGR/{qmgr}/#
+    - $SYS/MQ/INFO/QMGR/{qmgr}/#
   system_topic_max_messages_per_poll: 500
   channel_patterns:
     - DEV.*

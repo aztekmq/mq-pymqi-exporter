@@ -581,17 +581,27 @@ class PyMQICollector:
             | getattr(self.pymqi.CMQC, "MQSO_MANAGED", 0)
         )
         root_topic = getattr(config.metrics, "system_topic_root_topic", "SYSTEM.ADMIN.TOPIC")
+        pcf = self.pymqi.PCFExecute(qmgr)
+        root_topic_strings = self._resolve_topic_status_strings(
+            config,
+            pcf,
+            root_topic,
+            getattr(self.pymqi.CMQC, "MQCA_TOPIC_NAME", None),
+            getattr(self.pymqi.CMQC, "MQCA_TOPIC_STRING", None),
+        )
 
         for pattern in self._resolved_system_topic_patterns(config):
-            kwargs: dict[str, Any] = {"sub_opts": sub_opts}
-            if pattern.startswith("$SYS/"):
-                kwargs["topic_string"] = pattern
-            else:
-                kwargs["topic_name"] = root_topic
-                kwargs["topic_string"] = pattern
+            kwargs: dict[str, Any] = {
+                "sub_opts": sub_opts,
+                "topic_string": self._resolve_subscription_topic_string(pattern, root_topic_strings),
+            }
 
             try:
-                subscriptions.append(self.pymqi.Subscription(qmgr, **kwargs))
+                subscription = self.pymqi.Subscription(qmgr)
+                subscription.sub(**kwargs)
+                if subscription.get_sub_queue() is None:
+                    raise RuntimeError(f"Managed subscription queue was not created for topic pattern {pattern!r}")
+                subscriptions.append(subscription)
             except self.pymqi.MQMIError as exc:
                 raise self._build_mq_error(
                     config,
@@ -599,6 +609,10 @@ class PyMQICollector:
                     operation="open managed subscription",
                     object_type="topic",
                     object_name=pattern,
+                ) from exc
+            except Exception as exc:
+                raise MQCollectionError(
+                    f"IBM MQ operation open managed subscription failed for {config.name}; topic={pattern!r}; detail={exc}"
                 ) from exc
         return subscriptions
 
@@ -612,6 +626,19 @@ class PyMQICollector:
                 )
             )
         return tuple(resolved)
+
+    @staticmethod
+    def _resolve_subscription_topic_string(pattern: str, root_topic_strings: tuple[str, ...]) -> str:
+        if pattern.startswith("$SYS/"):
+            return pattern
+        if pattern.startswith("INFO/"):
+            return f"$SYS/MQ/{pattern}"
+        root = root_topic_strings[0] if root_topic_strings else ""
+        if not root:
+            raise MQCollectionError(
+                f"IBM MQ managed subscription topic string could not be resolved for pattern {pattern!r}; use a full $SYS/MQ/... topic string."
+            )
+        return f"{root.rstrip('/')}/{pattern.lstrip('/')}"
 
     def _collect_qmgr_metrics(self, config: QueueManagerConfig, pcf) -> list[MetricRecord]:
         records: list[MetricRecord] = []
@@ -826,6 +853,10 @@ class PyMQICollector:
 
         for subscription in session.subscriptions:
             queue = subscription.get_sub_queue()
+            if queue is None:
+                raise MQCollectionError(
+                    f"IBM MQ managed subscription queue was not available for {config.name}; topic_object={topic_object!r}"
+                )
             for md, payload in self._drain_queue(queue, config, topic_object, max_messages=max_messages - drained):
                 drained += 1
                 records.extend(self._parse_system_topic_publication(config, md, payload))

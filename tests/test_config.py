@@ -52,7 +52,7 @@ class ConfigTests(unittest.TestCase):
                   topic_patterns:
                     - SYSTEM.ADMIN.TOPIC
                   system_topic_subscription_patterns:
-                    - INFO/QMGR/{qmgr}/#
+                    - $SYS/MQ/INFO/QMGR/{qmgr}/#
                   system_topic_max_messages_per_poll: 25
                 """
             ).strip(),
@@ -70,7 +70,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.queue_managers[0].metrics.include_statistics)
         self.assertTrue(config.queue_managers[0].metrics.include_activity_trace)
         self.assertTrue(config.queue_managers[0].metrics.include_system_topic_stream)
-        self.assertEqual(config.queue_managers[0].metrics.system_topic_subscription_patterns, ("INFO/QMGR/{qmgr}/#",))
+        self.assertEqual(config.queue_managers[0].metrics.system_topic_subscription_patterns, ("$SYS/MQ/INFO/QMGR/{qmgr}/#",))
         self.assertEqual(config.queue_managers[0].metrics.system_topic_max_messages_per_poll, 25)
 
 

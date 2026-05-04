@@ -576,6 +576,20 @@ class MQCollectorTests(unittest.TestCase):
         self.assertEqual(metric.value, 9000000.0)
         self.assertEqual(metric.labels["monitor_branch"], "Log")
 
+    def test_resolve_subscription_topic_string_anchors_relative_pattern_to_root_topic(self) -> None:
+        value = PyMQICollector._resolve_subscription_topic_string(
+            "INFO/QMGR/QM1/#",
+            ("$SYS/MQ",),
+        )
+        self.assertEqual(value, "$SYS/MQ/INFO/QMGR/QM1/#")
+
+    def test_resolve_subscription_topic_string_auto_roots_legacy_info_pattern(self) -> None:
+        value = PyMQICollector._resolve_subscription_topic_string(
+            "INFO/QMGR/QM1/#",
+            (),
+        )
+        self.assertEqual(value, "$SYS/MQ/INFO/QMGR/QM1/#")
+
 
 class SchedulerFailureTests(unittest.TestCase):
     def test_scheduler_records_exception_message_in_runtime_state(self) -> None:
