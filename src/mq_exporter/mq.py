@@ -1480,13 +1480,18 @@ class PyMQICollector:
 
     def _system_topic_labels(self, config: QueueManagerConfig, published_topic: str) -> dict[str, str]:
         monitor_path = self._parse_monitor_path(published_topic)
-        return {
+        labels = {
             "qmgr": config.name,
             "published_topic": published_topic,
             "monitor_class": monitor_path["monitor_class"],
             "monitor_branch": monitor_path["monitor_branch"],
             "monitor_leaf": monitor_path["monitor_leaf"],
         }
+        if monitor_path["monitor_class"] == "STATAPP":
+            labels["statapp_topic_token"] = monitor_path["monitor_branch"]
+            labels["statapp_appl_name"] = self._decode_statapp_topic_token(monitor_path["monitor_branch"])
+            labels["statapp_type"] = monitor_path["monitor_leaf"]
+        return labels
 
     def _system_topic_pcf_records(self, topic_labels: dict[str, str], data: Any, *, context: str = "root") -> list[MetricRecord]:
         records: list[MetricRecord] = []
@@ -1597,7 +1602,7 @@ class PyMQICollector:
         return records
 
     def _system_topic_metric_labels(self, topic_labels: dict[str, str], data: dict[Any, Any], context: str) -> dict[str, str]:
-        return {
+        labels = {
             "qmgr": topic_labels["qmgr"],
             "monitor_branch": topic_labels.get("monitor_branch", "<unknown>"),
             "monitor_leaf": topic_labels.get("monitor_leaf", "<none>"),
@@ -1613,6 +1618,17 @@ class PyMQICollector:
             "monitor_desc": self._first_string(data.get(self._cmqcfc_value("MQCAMO_MONITOR_DESC"))) or "<none>",
             "monitor_type_desc": self._first_string(data.get(self._cmqcfc_value("MQCAMO_MONITOR_TYPE"))) or "<none>",
         }
+        if "statapp_topic_token" in topic_labels:
+            labels["statapp_topic_token"] = topic_labels["statapp_topic_token"]
+            labels["statapp_appl_name"] = topic_labels.get("statapp_appl_name", "<none>")
+            labels["statapp_type"] = topic_labels.get("statapp_type", "<none>")
+        return labels
+
+    @staticmethod
+    def _decode_statapp_topic_token(topic_token: str) -> str:
+        if not topic_token or topic_token == "<none>":
+            return "<none>"
+        return topic_token.replace("&", "/")
 
     def _descriptor_metric_match(
         self,

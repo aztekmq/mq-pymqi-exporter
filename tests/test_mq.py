@@ -111,6 +111,14 @@ class _FakeDiskRFH2(_FakeRFH2):
         }
 
 
+class _FakeStatappRFH2(_FakeRFH2):
+    def unpack(self, _payload, _encoding=None) -> None:
+        self._values = {
+            "StrucLength": 8,
+            "mqps": b"<mqps><Top>$SYS/MQ/INFO/QMGR/QM1/Monitor/STATAPP/DEPT1&amp;APPS&amp;STOCKQUOTE/PUT</Top></mqps>",
+        }
+
+
 class _FakeStore:
     def set_next_poll(self, _qmgr: str, _when: float) -> None:
         return None
@@ -576,6 +584,33 @@ class MQCollectorTests(unittest.TestCase):
         metric = [record for record in records if record.name == "ibmmq_qmgr_log_physical_bytes_written_total"][0]
         self.assertEqual(metric.value, 9000000.0)
         self.assertEqual(metric.labels["monitor_branch"], "Log")
+
+    def test_system_topic_publication_decodes_statapp_topic_token_to_application_name(self) -> None:
+        collector = self._collector_with_admin_pcf({735: 7})
+        collector.pymqi.RFH2 = _FakeStatappRFH2
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+        )
+
+        records = collector._parse_system_topic_publication(
+            config,
+            types.SimpleNamespace(Format=b"MQHRF2  ", Encoding=273),
+            b"RFH bodypcf",
+        )
+
+        publication = [record for record in records if record.name == "ibmmq_system_topic_publications"][0]
+        self.assertEqual(publication.labels["statapp_topic_token"], "DEPT1&APPS&STOCKQUOTE")
+        self.assertEqual(publication.labels["statapp_appl_name"], "DEPT1/APPS/STOCKQUOTE")
+        self.assertEqual(publication.labels["statapp_type"], "PUT")
+
+        explicit = [record for record in records if record.name == "ibmmq_statapp_messages_put_total"][0]
+        self.assertEqual(explicit.labels["statapp_topic_token"], "DEPT1&APPS&STOCKQUOTE")
+        self.assertEqual(explicit.labels["statapp_appl_name"], "DEPT1/APPS/STOCKQUOTE")
+        self.assertEqual(explicit.labels["statapp_type"], "PUT")
 
     def test_subscription_topic_for_monitor_type_replaces_object_placeholder_with_single_level_wildcard(self) -> None:
         value = PyMQICollector._subscription_topic_for_monitor_type(
