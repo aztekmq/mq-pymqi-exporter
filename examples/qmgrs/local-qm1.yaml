@@ -25,7 +25,14 @@ metrics:
   topic_patterns:
     - SYSTEM.ADMIN.TOPIC
   system_topic_subscription_patterns:
-    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/#
+    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATMQI/#
+    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATQ/#
+    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATAPP/#
+    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/CPU/#
+    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/DISK/#
   system_topic_max_messages_per_poll: 500
+  system_topic_diagnostics: true
+  system_topic_startup_probe_window_seconds: 15
+  system_topic_startup_probe_interval_seconds: 5
   channel_patterns:
     - DEV.*

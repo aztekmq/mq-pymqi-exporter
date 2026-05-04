@@ -77,7 +77,16 @@ class MainTests(unittest.TestCase):
                 system_topic_root_topic="SYSTEM.ADMIN.TOPIC",
                 queue_patterns=("APP.*",),
                 topic_patterns=("SYSTEM.ADMIN.TOPIC",),
-                system_topic_subscription_patterns=("$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/#",),
+                system_topic_subscription_patterns=(
+                    "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATMQI/#",
+                    "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATQ/#",
+                    "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATAPP/#",
+                    "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/CPU/#",
+                    "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/DISK/#",
+                ),
+                system_topic_diagnostics=True,
+                system_topic_startup_probe_window_seconds=9.0,
+                system_topic_startup_probe_interval_seconds=3.0,
                 channel_patterns=("DEV.*",),
             ),
         )
@@ -88,7 +97,9 @@ class MainTests(unittest.TestCase):
         self.assertTrue(any("PCF command queue: SYSTEM.ADMIN.COMMAND.QUEUE" in line for line in lines))
         self.assertTrue(any("SYSTEM.ADMIN.STATISTICS.QUEUE" in line for line in lines))
         self.assertTrue(any("SYSTEM.ADMIN.TOPIC" in line for line in lines))
-        self.assertTrue(any("$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/#" in line for line in lines))
+        self.assertTrue(any("$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATQ/#" in line for line in lines))
+        self.assertTrue(any("system topic diagnostics: enabled" in line for line in lines))
+        self.assertTrue(any("system topic startup probe window: 9.0s interval=3.0s" in line for line in lines))
         self.assertTrue(any("SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE" in line for line in lines))
         self.assertTrue(any("Collector mode: pyMQI PCF polling plus admin queue draining." in line for line in lines))
 

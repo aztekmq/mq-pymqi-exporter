@@ -60,13 +60,22 @@ class MetricsConfig:
     include_system_topic_stream: bool = False
     queue_patterns: tuple[str, ...] = ("*",)
     topic_patterns: tuple[str, ...] = ("SYSTEM.ADMIN.TOPIC",)
-    system_topic_subscription_patterns: tuple[str, ...] = ("$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/#",)
+    system_topic_subscription_patterns: tuple[str, ...] = (
+        "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATMQI/#",
+        "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATQ/#",
+        "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATAPP/#",
+        "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/CPU/#",
+        "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/DISK/#",
+    )
     channel_patterns: tuple[str, ...] = ()
     accounting_queue_name: str = "SYSTEM.ADMIN.ACCOUNTING.QUEUE"
     statistics_queue_name: str = "SYSTEM.ADMIN.STATISTICS.QUEUE"
     activity_trace_queue_name: str = "SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE"
     system_topic_root_topic: str = "SYSTEM.ADMIN.TOPIC"
     system_topic_max_messages_per_poll: int = 500
+    system_topic_diagnostics: bool = False
+    system_topic_startup_probe_window_seconds: float = 15.0
+    system_topic_startup_probe_interval_seconds: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -166,13 +175,27 @@ def load_exporter_config(path: str | Path) -> ExporterConfig:
             include_system_topic_stream=bool(metrics_raw.get("include_system_topic_stream", False)),
             queue_patterns=tuple(metrics_raw.get("queue_patterns", ["*"])),
             topic_patterns=tuple(metrics_raw.get("topic_patterns", ["SYSTEM.ADMIN.TOPIC"])),
-            system_topic_subscription_patterns=tuple(metrics_raw.get("system_topic_subscription_patterns", ["$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/#"])),
+            system_topic_subscription_patterns=tuple(
+                metrics_raw.get(
+                    "system_topic_subscription_patterns",
+                    [
+                        "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATMQI/#",
+                        "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATQ/#",
+                        "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATAPP/#",
+                        "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/CPU/#",
+                        "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/DISK/#",
+                    ],
+                )
+            ),
             channel_patterns=tuple(metrics_raw.get("channel_patterns", [])),
             accounting_queue_name=str(metrics_raw.get("accounting_queue_name", "SYSTEM.ADMIN.ACCOUNTING.QUEUE")),
             statistics_queue_name=str(metrics_raw.get("statistics_queue_name", "SYSTEM.ADMIN.STATISTICS.QUEUE")),
             activity_trace_queue_name=str(metrics_raw.get("activity_trace_queue_name", "SYSTEM.ADMIN.TRACE.ACTIVITY.QUEUE")),
             system_topic_root_topic=str(metrics_raw.get("system_topic_root_topic", "SYSTEM.ADMIN.TOPIC")),
             system_topic_max_messages_per_poll=int(metrics_raw.get("system_topic_max_messages_per_poll", 500)),
+            system_topic_diagnostics=bool(metrics_raw.get("system_topic_diagnostics", False)),
+            system_topic_startup_probe_window_seconds=float(metrics_raw.get("system_topic_startup_probe_window_seconds", 15.0)),
+            system_topic_startup_probe_interval_seconds=float(metrics_raw.get("system_topic_startup_probe_interval_seconds", 5.0)),
         )
         qmgrs.append(
             QueueManagerConfig(

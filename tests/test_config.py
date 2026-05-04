@@ -52,8 +52,15 @@ class ConfigTests(unittest.TestCase):
                   topic_patterns:
                     - SYSTEM.ADMIN.TOPIC
                   system_topic_subscription_patterns:
-                    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/#
+                    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATMQI/#
+                    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATQ/#
+                    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATAPP/#
+                    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/CPU/#
+                    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/DISK/#
                   system_topic_max_messages_per_poll: 25
+                  system_topic_diagnostics: true
+                  system_topic_startup_probe_window_seconds: 9
+                  system_topic_startup_probe_interval_seconds: 3
                 """
             ).strip(),
             encoding="utf-8",
@@ -70,8 +77,20 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.queue_managers[0].metrics.include_statistics)
         self.assertTrue(config.queue_managers[0].metrics.include_activity_trace)
         self.assertTrue(config.queue_managers[0].metrics.include_system_topic_stream)
-        self.assertEqual(config.queue_managers[0].metrics.system_topic_subscription_patterns, ("$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/#",))
+        self.assertEqual(
+            config.queue_managers[0].metrics.system_topic_subscription_patterns,
+            (
+                "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATMQI/#",
+                "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATQ/#",
+                "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATAPP/#",
+                "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/CPU/#",
+                "$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/DISK/#",
+            ),
+        )
         self.assertEqual(config.queue_managers[0].metrics.system_topic_max_messages_per_poll, 25)
+        self.assertTrue(config.queue_managers[0].metrics.system_topic_diagnostics)
+        self.assertEqual(config.queue_managers[0].metrics.system_topic_startup_probe_window_seconds, 9.0)
+        self.assertEqual(config.queue_managers[0].metrics.system_topic_startup_probe_interval_seconds, 3.0)
 
 
 if __name__ == "__main__":

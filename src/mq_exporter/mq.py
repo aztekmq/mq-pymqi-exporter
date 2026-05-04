@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import logging
 from collections.abc import Iterable
 from threading import RLock
+import time
 from typing import Any
 from xml.etree import ElementTree
 
@@ -499,6 +500,7 @@ class PyMQICollector:
         self.pymqi = pymqi
         self._session_lock = RLock()
         self._sessions: dict[str, _CollectorSession] = {}
+        self._startup_metadata_probe_completed: set[str] = set()
         self._selector_names = self._build_selector_name_map()
 
     def close(self) -> None:
@@ -508,30 +510,38 @@ class PyMQICollector:
             self._invalidate_session(name)
 
     def collect(self, config: QueueManagerConfig) -> list[MetricRecord]:
-        session = self._get_or_create_session(config)
-        try:
-            pcf = self.pymqi.PCFExecute(session.qmgr)
-            records: list[MetricRecord] = []
-            if config.metrics.include_queue_manager:
-                records.extend(self._collect_qmgr_metrics(config, pcf))
-            if config.metrics.include_queues:
-                records.extend(self._collect_queue_metrics(config, pcf))
-            if getattr(config.metrics, "include_topics", False):
-                records.extend(self._collect_topic_metrics(config, pcf))
-            if config.metrics.include_channels:
-                records.extend(self._collect_channel_metrics(config, pcf))
-            if config.metrics.include_accounting:
-                records.extend(self._collect_accounting_metrics(config, session.qmgr))
-            if getattr(config.metrics, "include_statistics", False):
-                records.extend(self._collect_statistics_metrics(config, session.qmgr))
-            if config.metrics.include_activity_trace:
-                records.extend(self._collect_activity_trace_metrics(config, session.qmgr))
-            if getattr(config.metrics, "include_system_topic_stream", False):
-                records.extend(self._collect_system_topic_stream_metrics(config, session))
-            return records
-        except Exception:
-            self._invalidate_session(config.name)
-            raise
+        retried_after_reconnect = False
+        while True:
+            session = self._get_or_create_session(config)
+            try:
+                return self._collect_with_session(config, session)
+            except Exception as exc:
+                self._invalidate_session(config.name)
+                if retried_after_reconnect or not self._is_reconnectable_session_error(exc):
+                    raise
+                retried_after_reconnect = True
+                LOG.warning("Reconnecting MQ session for %s after stale/broken connection error.", config.name)
+
+    def _collect_with_session(self, config: QueueManagerConfig, session: _CollectorSession) -> list[MetricRecord]:
+        pcf = self.pymqi.PCFExecute(session.qmgr)
+        records: list[MetricRecord] = []
+        if config.metrics.include_queue_manager:
+            records.extend(self._collect_qmgr_metrics(config, pcf))
+        if config.metrics.include_queues:
+            records.extend(self._collect_queue_metrics(config, pcf))
+        if getattr(config.metrics, "include_topics", False):
+            records.extend(self._collect_topic_metrics(config, pcf))
+        if config.metrics.include_channels:
+            records.extend(self._collect_channel_metrics(config, pcf))
+        if config.metrics.include_accounting:
+            records.extend(self._collect_accounting_metrics(config, session.qmgr))
+        if getattr(config.metrics, "include_statistics", False):
+            records.extend(self._collect_statistics_metrics(config, session.qmgr))
+        if config.metrics.include_activity_trace:
+            records.extend(self._collect_activity_trace_metrics(config, session.qmgr))
+        if getattr(config.metrics, "include_system_topic_stream", False):
+            records.extend(self._collect_system_topic_stream_metrics(config, session))
+        return records
 
     def _get_or_create_session(self, config: QueueManagerConfig) -> _CollectorSession:
         with self._session_lock:
@@ -543,6 +553,7 @@ class PyMQICollector:
         subscriptions: list[Any] = []
         try:
             if getattr(config.metrics, "include_system_topic_stream", False):
+                self._run_system_topic_startup_probe(config, qmgr)
                 subscriptions = self._open_system_topic_subscriptions(config, qmgr)
         except Exception:
             try:
@@ -592,6 +603,17 @@ class PyMQICollector:
                 object_name=config.connection.queue_manager,
             ) from exc
 
+    def _is_reconnectable_session_error(self, exc: Exception) -> bool:
+        reconnect_reason_codes = {
+            getattr(self.pymqi.CMQC, "MQRC_HCONN_ERROR", 2018),
+            getattr(self.pymqi.CMQC, "MQRC_CONNECTION_BROKEN", 2009),
+        }
+        if isinstance(exc, MQCollectionError):
+            return exc.reason_code in reconnect_reason_codes
+        if isinstance(exc, self.pymqi.MQMIError):
+            return getattr(exc, "reason", None) in reconnect_reason_codes
+        return False
+
     def _open_system_topic_subscriptions(self, config: QueueManagerConfig, qmgr) -> list[Any]:
         subscriptions: list[Any] = []
         sub_opts = (
@@ -629,13 +651,44 @@ class PyMQICollector:
     def _discovered_system_topic_subscription_topics(self, config: QueueManagerConfig, qmgr) -> tuple[str, ...]:
         topics: list[str] = []
         seen: set[str] = set()
-        for monitor_type in self._discover_monitor_types(config, qmgr):
+        no_msg_reason = getattr(self.pymqi.CMQC, "MQRC_NO_MSG_AVAILABLE", 2033)
+        try:
+            monitor_types = self._discover_monitor_types(config, qmgr)
+        except MQCollectionError as exc:
+            message = str(exc)
+            no_retained_metadata = (
+                exc.reason_code == no_msg_reason
+                or exc.reason_name == "MQRC_NO_MSG_AVAILABLE"
+                or f"reason={no_msg_reason}" in message
+                or "MQRC_NO_MSG_AVAILABLE" in message
+            )
+            if not no_retained_metadata:
+                raise
+            return self._metadata_discovery_fallback_topics(config)
+
+        for monitor_type in monitor_types:
             topic_string = self._subscription_topic_for_monitor_type(monitor_type)
             if not topic_string or topic_string in seen:
                 continue
             seen.add(topic_string)
             topics.append(topic_string)
+        if not topics:
+            return self._metadata_discovery_fallback_topics(config)
         return tuple(topics)
+
+    def _metadata_discovery_fallback_topics(self, config: QueueManagerConfig) -> tuple[str, ...]:
+        explicit_topics = self._configured_explicit_system_topic_patterns(config)
+        if explicit_topics:
+            LOG.warning(
+                "System-topic metadata discovery did not yield retained publications for %s; using explicitly configured system-topic strings only.",
+                config.name,
+            )
+            return explicit_topics
+        LOG.warning(
+            "System-topic metadata discovery did not yield retained publications for %s; skipping system-topic stream because amqsruaa-style discovery did not produce concrete topics.",
+            config.name,
+        )
+        return ()
 
     def _discover_monitor_types(self, config: QueueManagerConfig, qmgr) -> list[_DiscoveredMonitorType]:
         qmgr_name = config.connection.queue_manager or config.name
@@ -703,30 +756,128 @@ class PyMQICollector:
             return topic_string
         return ""
 
-    def _get_system_topic_metadata_message(self, config: QueueManagerConfig, qmgr, topic_string: str) -> dict[Any, Any]:
+    def _get_system_topic_metadata_message(
+        self,
+        config: QueueManagerConfig,
+        qmgr,
+        topic_string: str,
+        *,
+        wait_interval_ms: int = 10000,
+    ) -> dict[Any, Any]:
         sub_opts = (
             getattr(self.pymqi.CMQC, "MQSO_CREATE", 0)
             | getattr(self.pymqi.CMQC, "MQSO_NON_DURABLE", 0)
+            | getattr(self.pymqi.CMQC, "MQSO_MANAGED", 0)
             | getattr(self.pymqi.CMQC, "MQSO_FAIL_IF_QUIESCING", 0)
         )
         subscription = None
         queue = None
         try:
+            self._log_system_topic_diagnostic(
+                config,
+                phase="metadata_discovery_attempt",
+                topic_string=topic_string,
+                outcome="attempt",
+            )
             subscription = self.pymqi.Subscription(qmgr)
-            subscription.sub(sub_opts=sub_opts, topic_string=topic_string)
+            try:
+                subscription.sub(sub_opts=sub_opts, topic_string=topic_string)
+            except self.pymqi.MQMIError as exc:
+                error = self._build_mq_error(
+                    config,
+                    exc,
+                    operation="subscribe for retained metadata publication",
+                    object_type="topic",
+                    object_name=topic_string,
+                )
+                self._log_system_topic_diagnostic(
+                    config,
+                    phase="metadata_discovery_subscribe",
+                    topic_string=topic_string,
+                    outcome=self._classify_system_topic_diagnostic_outcome(error),
+                    exc=error,
+                )
+                raise error from exc
             queue = subscription.get_sub_queue()
             if queue is None:
                 raise MQCollectionError(
                     f"IBM MQ metadata subscription queue was not available for {config.name}; topic={topic_string!r}"
                 )
-            md, payload = self._get_one_message(queue, config, topic_string, wait_interval_ms=10000)
-            return self._unpack_pcf_message(config, topic_string, payload, operation="parse system topic metadata")
+            try:
+                md, payload = self._get_one_message(queue, config, topic_string, wait_interval_ms=wait_interval_ms)
+            except MQCollectionError as error:
+                self._log_system_topic_diagnostic(
+                    config,
+                    phase="metadata_discovery_get",
+                    topic_string=topic_string,
+                    outcome=self._classify_system_topic_diagnostic_outcome(error),
+                    exc=error,
+                )
+                raise
+            unpacked = self._unpack_pcf_message(config, topic_string, payload, operation="parse system topic metadata")
+            self._log_system_topic_diagnostic(
+                config,
+                phase="metadata_discovery_get",
+                topic_string=topic_string,
+                outcome="retained_publication_received",
+                detail=f"payload_bytes={len(payload)}",
+            )
+            return unpacked
         finally:
             if subscription is not None:
                 try:
                     subscription.close(close_sub_queue=True)
                 except Exception:
                     LOG.debug("Metadata subscription close failed for %s topic %s", config.name, topic_string, exc_info=True)
+
+    def _run_system_topic_startup_probe(self, config: QueueManagerConfig, qmgr) -> None:
+        if not self._system_topic_diagnostics_enabled(config):
+            return
+        with self._session_lock:
+            if config.name in self._startup_metadata_probe_completed:
+                return
+            self._startup_metadata_probe_completed.add(config.name)
+
+        qmgr_name = config.connection.queue_manager or config.name
+        metadata_topic = f"$SYS/MQ/INFO/QMGR/{qmgr_name}/Monitor/METADATA/CLASSES"
+        window_seconds = max(0.0, float(getattr(config.metrics, "system_topic_startup_probe_window_seconds", 15.0)))
+        interval_seconds = max(0.1, float(getattr(config.metrics, "system_topic_startup_probe_interval_seconds", 5.0)))
+        deadline = time.monotonic() + window_seconds
+        attempts = 0
+        successes = 0
+        classified_outcomes: list[str] = []
+
+        while True:
+            attempts += 1
+            try:
+                self._get_system_topic_metadata_message(
+                    config,
+                    qmgr,
+                    metadata_topic,
+                    wait_interval_ms=max(1, int(interval_seconds * 1000)),
+                )
+                successes += 1
+                classified_outcomes.append("retained_publication_received")
+            except MQCollectionError as exc:
+                classified_outcomes.append(self._classify_system_topic_diagnostic_outcome(exc))
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(interval_seconds)
+
+        if successes == attempts and attempts > 0:
+            summary = "visible_on_all_attempts"
+        elif successes > 0:
+            summary = "visible_on_some_attempts_only"
+        else:
+            summary = "not_visible_on_any_attempt"
+        detail = f"attempts={attempts} successes={successes} outcomes={','.join(classified_outcomes)}"
+        self._log_system_topic_diagnostic(
+            config,
+            phase="startup_metadata_probe_summary",
+            topic_string=metadata_topic,
+            outcome=summary,
+            detail=detail,
+        )
 
     def _resolved_system_topic_patterns(self, config: QueueManagerConfig) -> tuple[str, ...]:
         resolved: list[str] = []
@@ -735,13 +886,60 @@ class PyMQICollector:
                 qmgr=config.name,
                 queue_manager=config.connection.queue_manager,
             )
-            if value in {
-                f"INFO/QMGR/{config.name}/#",
-                f"$SYS/MQ/INFO/QMGR/{config.name}/#",
-            }:
-                value = f"$SYS/MQ/INFO/QMGR/{config.name}/Monitor/#"
             resolved.append(value)
         return tuple(resolved)
+
+    def _configured_explicit_system_topic_patterns(self, config: QueueManagerConfig) -> tuple[str, ...]:
+        explicit: list[str] = []
+        for value in self._resolved_system_topic_patterns(config):
+            if "#" in value or "+" in value:
+                continue
+            explicit.append(value)
+        return tuple(explicit)
+
+    @staticmethod
+    def _system_topic_diagnostics_enabled(config: QueueManagerConfig) -> bool:
+        return bool(getattr(config.metrics, "system_topic_diagnostics", False))
+
+    def _classify_system_topic_diagnostic_outcome(self, exc: MQCollectionError) -> str:
+        reason_code = exc.reason_code
+        if reason_code == getattr(self.pymqi.CMQC, "MQRC_NO_MSG_AVAILABLE", 2033):
+            return "zero_publications"
+        if reason_code == getattr(self.pymqi.CMQC, "MQRC_NOT_AUTHORIZED", 2035):
+            return "authorization_denied"
+        if reason_code in {
+            getattr(self.pymqi.CMQC, "MQRC_ADMIN_TOPIC_STRING_ERROR", 2598),
+            3308,
+            3015,
+        }:
+            return "unsupported_topic_behavior"
+        return "other_mq_error"
+
+    def _log_system_topic_diagnostic(
+        self,
+        config: QueueManagerConfig,
+        *,
+        phase: str,
+        topic_string: str,
+        outcome: str,
+        exc: MQCollectionError | None = None,
+        detail: str | None = None,
+    ) -> None:
+        if not self._system_topic_diagnostics_enabled(config):
+            return
+        message = (
+            f"System-topic diagnostic for {config.name}: phase={phase} "
+            f"topic={topic_string!r} outcome={outcome}"
+        )
+        if exc is not None:
+            if exc.reason_code is not None:
+                message += f" reason={exc.reason_code}"
+            if exc.reason_name:
+                message += f" reason_name={exc.reason_name}"
+        if detail:
+            message += f" detail={detail}"
+        level = logging.INFO if outcome in {"attempt", "retained_publication_received"} else logging.WARNING
+        LOG.log(level, message)
 
     @staticmethod
     def _subscription_topic_for_monitor_type(monitor_type: _DiscoveredMonitorType) -> str:

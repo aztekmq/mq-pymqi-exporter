@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import types
 import unittest
 
@@ -18,7 +19,7 @@ from mq_exporter.config import (
     ServerConfig,
     WorkerPoolConfig,
 )
-from mq_exporter.mq import MQCollectionError, PyMQICollector
+from mq_exporter.mq import MQCollectionError, MetricRecord, PyMQICollector
 from mq_exporter.runtime_state import RuntimeState
 from mq_exporter.scheduler import PollScheduler
 
@@ -582,7 +583,7 @@ class MQCollectorTests(unittest.TestCase):
         )
         self.assertEqual(value, "$SYS/MQ/INFO/QMGR/QM1/Monitor/STATQ/Queue/+/PUT")
 
-    def test_resolved_system_topic_patterns_rewrite_illegal_qmgr_root_wildcard(self) -> None:
+    def test_resolved_system_topic_patterns_do_not_rewrite_configured_values(self) -> None:
         collector = PyMQICollector.__new__(PyMQICollector)
         config = QueueManagerConfig(
             name="QM1",
@@ -594,7 +595,113 @@ class MQCollectorTests(unittest.TestCase):
         )
         self.assertEqual(
             collector._resolved_system_topic_patterns(config),
-            ("$SYS/MQ/INFO/QMGR/QM1/Monitor/#",),
+            ("$SYS/MQ/INFO/QMGR/QM1/#",),
+        )
+
+    def test_discovered_system_topic_subscription_topics_skips_wildcard_fallback_on_unstructured_2033(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector.pymqi = types.SimpleNamespace(CMQC=types.SimpleNamespace(MQRC_NO_MSG_AVAILABLE=2033))
+        collector._discover_monitor_types = lambda config, qmgr: (_ for _ in ()).throw(
+            MQCollectionError(
+                "IBM MQ operation get retained metadata publication failed for QM1; "
+                "topic='$SYS/MQ/INFO/QMGR/QM1/Monitor/METADATA/CLASSES'; completion_code=2; "
+                "reason=2033 (MQRC_NO_MSG_AVAILABLE)."
+            )
+        )
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+            metrics=MetricsConfig(system_topic_subscription_patterns=("$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATMQI/#",)),
+        )
+
+        self.assertEqual(collector._discovered_system_topic_subscription_topics(config, object()), ())
+
+    def test_discovered_system_topic_subscription_topics_uses_explicit_non_wildcard_fallback_on_unstructured_2033(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector.pymqi = types.SimpleNamespace(CMQC=types.SimpleNamespace(MQRC_NO_MSG_AVAILABLE=2033))
+        collector._discover_monitor_types = lambda config, qmgr: (_ for _ in ()).throw(
+            MQCollectionError(
+                "IBM MQ operation get retained metadata publication failed for QM1; "
+                "topic='$SYS/MQ/INFO/QMGR/QM1/Monitor/METADATA/CLASSES'; completion_code=2; "
+                "reason=2033 (MQRC_NO_MSG_AVAILABLE)."
+            )
+        )
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+            metrics=MetricsConfig(system_topic_subscription_patterns=("$SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATMQI/PUT",)),
+        )
+
+        self.assertEqual(
+            collector._discovered_system_topic_subscription_topics(config, object()),
+            ("$SYS/MQ/INFO/QMGR/QM1/Monitor/STATMQI/PUT",),
+        )
+
+    def test_collect_retries_once_after_hconn_error(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector.pymqi = types.SimpleNamespace(
+            CMQC=types.SimpleNamespace(MQRC_HCONN_ERROR=2018, MQRC_CONNECTION_BROKEN=2009),
+            MQMIError=Exception,
+        )
+        collector._session_lock = threading.Lock()
+        collector._sessions = {}
+        first_session = types.SimpleNamespace(qmgr="stale", subscriptions=())
+        second_session = types.SimpleNamespace(qmgr="fresh", subscriptions=())
+        sessions = [first_session, second_session]
+        collector._get_or_create_session = lambda config: sessions.pop(0)
+        invalidated = []
+        collector._invalidate_session = lambda name: invalidated.append(name)
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+        )
+
+        calls = []
+
+        def _collect_with_session(config_arg, session_arg):
+            calls.append(session_arg.qmgr)
+            if session_arg.qmgr == "stale":
+                raise MQCollectionError("stale connection", reason_code=2018)
+            return [MetricRecord(name="ok", documentation="", labels={}, value=1.0)]
+
+        collector._collect_with_session = _collect_with_session
+
+        records = collector.collect(config)
+
+        self.assertEqual(calls, ["stale", "fresh"])
+        self.assertEqual(invalidated, ["QM1"])
+        self.assertEqual(records[0].name, "ok")
+
+    def test_classify_system_topic_diagnostic_outcomes(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector.pymqi = types.SimpleNamespace(
+            CMQC=types.SimpleNamespace(
+                MQRC_NO_MSG_AVAILABLE=2033,
+                MQRC_NOT_AUTHORIZED=2035,
+                MQRC_ADMIN_TOPIC_STRING_ERROR=2598,
+            )
+        )
+
+        self.assertEqual(
+            collector._classify_system_topic_diagnostic_outcome(MQCollectionError("x", reason_code=2033)),
+            "zero_publications",
+        )
+        self.assertEqual(
+            collector._classify_system_topic_diagnostic_outcome(MQCollectionError("x", reason_code=2035)),
+            "authorization_denied",
+        )
+        self.assertEqual(
+            collector._classify_system_topic_diagnostic_outcome(MQCollectionError("x", reason_code=2598)),
+            "unsupported_topic_behavior",
         )
 
 

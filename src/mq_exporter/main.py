@@ -44,6 +44,15 @@ def _startup_target_lines(config) -> list[str]:
                 f"    queue inquiry patterns: {queue_patterns}",
                 f"    topic inquiry patterns: {topic_patterns}",
                 f"    system topic subscription patterns: {system_topic_patterns}",
+                (
+                    f"    system topic diagnostics: "
+                    f"{'enabled' if getattr(qmgr.metrics, 'system_topic_diagnostics', False) else 'disabled'}"
+                ),
+                (
+                    f"    system topic startup probe window: "
+                    f"{getattr(qmgr.metrics, 'system_topic_startup_probe_window_seconds', 15.0)}s "
+                    f"interval={getattr(qmgr.metrics, 'system_topic_startup_probe_interval_seconds', 5.0)}s"
+                ),
                 f"    channel inquiry patterns: {channel_patterns}",
                 (
                     f"    accounting queue drain: {'enabled' if getattr(qmgr.metrics, 'include_accounting', False) else 'disabled'} "
