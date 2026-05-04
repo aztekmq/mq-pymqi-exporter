@@ -35,6 +35,32 @@ class _FakePCF:
         raise _FakeMQMIError(2, 2085)
 
 
+class _FakeTopicStatusPCF:
+    def __init__(self, *, topic_name_attr: int, topic_string_attr: int, status_type_attr: int, status_value: int, admin_topic_name_attr: int, pub_count_attr: int) -> None:
+        self.topic_name_attr = topic_name_attr
+        self.topic_string_attr = topic_string_attr
+        self.status_type_attr = status_type_attr
+        self.status_value = status_value
+        self.admin_topic_name_attr = admin_topic_name_attr
+        self.pub_count_attr = pub_count_attr
+
+    def MQCMD_INQUIRE_TOPIC(self, args):
+        if self.topic_name_attr in args and args[self.topic_name_attr] == "SYSTEM.ADMIN.TOPIC":
+            return [{self.topic_string_attr: b"$SYS/MQ/INFO/QMGR/QM1"}]
+        raise _FakeMQMIError(2, 2085)
+
+    def MQCMD_INQUIRE_TOPIC_STATUS(self, args):
+        if self.topic_string_attr in args and args[self.topic_string_attr] == "$SYS/MQ/INFO/QMGR/QM1":
+            return [
+                {
+                    self.topic_string_attr: b"$SYS/MQ/INFO/QMGR/QM1",
+                    self.admin_topic_name_attr: b"SYSTEM.ADMIN.TOPIC",
+                    self.pub_count_attr: 2,
+                }
+            ]
+        raise _FakeMQMIError(2, 3308)
+
+
 class _FakeRFH2:
     def __init__(self) -> None:
         self._values = {}
@@ -191,6 +217,47 @@ class MQCollectorTests(unittest.TestCase):
         self.assertIn("queue='APP.INPUT.QUEUE'", message)
         self.assertIn("reason=2085 (MQRC_UNKNOWN_OBJECT_NAME)", message)
         self.assertIn("The requested queue name 'APP.INPUT.QUEUE' is unknown", message)
+
+    def test_topic_status_prefers_admin_topic_name_for_topic_objects(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector.pymqi = types.SimpleNamespace(
+            MQMIError=_FakeMQMIError,
+            CMQC=types.SimpleNamespace(
+                MQCA_TOPIC_NAME=2092,
+                MQCA_TOPIC_STRING=2094,
+                MQCA_ADMIN_TOPIC_NAME=2105,
+                MQIA_PUB_COUNT=304,
+            ),
+            CMQCFC=types.SimpleNamespace(
+                MQIACF_TOPIC_STATUS_TYPE=1302,
+                MQIACF_TOPIC_STATUS=1295,
+            ),
+        )
+        collector._selector_names = collector._build_selector_name_map()
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(queue_manager="QM1", channel="DEV.APP.SVRCONN", conn_name="localhost(1414)"),
+            metrics=MetricsConfig(topic_patterns=("SYSTEM.ADMIN.TOPIC",)),
+        )
+        pcf = _FakeTopicStatusPCF(
+            topic_name_attr=2092,
+            topic_string_attr=2094,
+            status_type_attr=1302,
+            status_value=1295,
+            admin_topic_name_attr=2105,
+            pub_count_attr=304,
+        )
+
+        records = collector._collect_topic_metrics(config, pcf)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].name, "ibmmq_topic_publishers")
+        self.assertEqual(records[0].labels["topic"], "$SYS/MQ/INFO/QMGR/QM1")
+        self.assertEqual(records[0].labels["admin_topic_name"], "SYSTEM.ADMIN.TOPIC")
+        self.assertEqual(records[0].value, 2.0)
 
     def test_accounting_message_generates_app_object_metrics(self) -> None:
         collector = self._collector_with_admin_pcf(

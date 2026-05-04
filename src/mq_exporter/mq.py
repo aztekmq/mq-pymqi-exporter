@@ -677,6 +677,7 @@ class PyMQICollector:
 
     def _collect_topic_metrics(self, config: QueueManagerConfig, pcf) -> list[MetricRecord]:
         records: list[MetricRecord] = []
+        topic_name_attr = getattr(self.pymqi.CMQC, "MQCA_TOPIC_NAME", None)
         topic_string_attr = getattr(self.pymqi.CMQC, "MQCA_TOPIC_STRING", None)
         topic_status_type_attr = getattr(self.pymqi.CMQCFC, "MQIACF_TOPIC_STATUS_TYPE", None)
         topic_status_value = self._cmqcfc_value("MQIACF_TOPIC_STATUS")
@@ -685,41 +686,74 @@ class PyMQICollector:
             return records
 
         for pattern in getattr(config.metrics, "topic_patterns", ()):
-            arguments = {topic_string_attr: pattern}
-            if topic_status_type_attr is not None and topic_status_value is not None:
-                arguments[topic_status_type_attr] = topic_status_value
-            responses = self._call_pcf(
-                pcf.MQCMD_INQUIRE_TOPIC_STATUS,
-                config,
-                operation="MQCMD_INQUIRE_TOPIC_STATUS",
-                object_type="topic",
-                object_name=pattern,
-                arguments=arguments,
-            )
-            for response in responses:
-                topic_string = self._normalize_mq_string(response.get(topic_string_attr, ""))
-                if not topic_string:
-                    continue
-                labels = {"qmgr": config.name, "topic": topic_string}
-                admin_topic_name = self._normalize_mq_string(response.get(admin_topic_name_attr, "")) if admin_topic_name_attr is not None else ""
-                if admin_topic_name:
-                    labels["admin_topic_name"] = admin_topic_name
-                for attr_name, spec in TOPIC_STATUS_SPECS.items():
-                    attr_id = getattr(self.pymqi.CMQC, attr_name, None)
-                    if attr_id is None or attr_id not in response:
+            topic_strings = self._resolve_topic_status_strings(config, pcf, pattern, topic_name_attr, topic_string_attr)
+            for topic_string_value in topic_strings:
+                arguments = {topic_string_attr: topic_string_value}
+                if topic_status_type_attr is not None and topic_status_value is not None:
+                    arguments[topic_status_type_attr] = topic_status_value
+                responses = self._call_pcf(
+                    pcf.MQCMD_INQUIRE_TOPIC_STATUS,
+                    config,
+                    operation="MQCMD_INQUIRE_TOPIC_STATUS",
+                    object_type="topic",
+                    object_name=topic_string_value,
+                    arguments=arguments,
+                )
+                for response in responses:
+                    topic_string = self._normalize_mq_string(response.get(topic_string_attr, ""))
+                    if not topic_string:
                         continue
-                    value = self._coerce_numeric(response[attr_id])
-                    if value is None:
-                        continue
-                    records.append(
-                        MetricRecord(
-                            name=spec.metric_name,
-                            documentation=spec.help_text,
-                            labels=labels,
-                            value=value,
+                    labels = {"qmgr": config.name, "topic": topic_string}
+                    admin_topic_name = self._normalize_mq_string(response.get(admin_topic_name_attr, "")) if admin_topic_name_attr is not None else ""
+                    if admin_topic_name:
+                        labels["admin_topic_name"] = admin_topic_name
+                    for attr_name, spec in TOPIC_STATUS_SPECS.items():
+                        attr_id = getattr(self.pymqi.CMQC, attr_name, None)
+                        if attr_id is None or attr_id not in response:
+                            continue
+                        value = self._coerce_numeric(response[attr_id])
+                        if value is None:
+                            continue
+                        records.append(
+                            MetricRecord(
+                                name=spec.metric_name,
+                                documentation=spec.help_text,
+                                labels=labels,
+                                value=value,
+                            )
                         )
-                    )
         return records
+
+    def _resolve_topic_status_strings(self, config: QueueManagerConfig, pcf, pattern: str, topic_name_attr, topic_string_attr) -> tuple[str, ...]:
+        if self._looks_like_topic_string(pattern):
+            return (pattern,)
+        if topic_name_attr is None or topic_string_attr is None:
+            return (pattern,)
+
+        topic_attrs_attr = self._cmqcfc_value("MQIACF_TOPIC_ATTRS")
+        arguments: dict[Any, Any] = {topic_name_attr: pattern}
+        if topic_attrs_attr is not None:
+            arguments[topic_attrs_attr] = [topic_string_attr]
+        responses = self._call_pcf(
+            pcf.MQCMD_INQUIRE_TOPIC,
+            config,
+            operation="MQCMD_INQUIRE_TOPIC",
+            object_type="topic",
+            object_name=pattern,
+            arguments=arguments,
+        )
+        resolved: list[str] = []
+        for response in responses:
+            topic_string = self._normalize_mq_string(response.get(topic_string_attr, ""))
+            if topic_string:
+                resolved.append(topic_string)
+        if resolved:
+            return tuple(resolved)
+        return (pattern,)
+
+    @staticmethod
+    def _looks_like_topic_string(pattern: str) -> bool:
+        return any(marker in pattern for marker in ("/", "#", "+")) or pattern.startswith("$")
 
     def _collect_channel_metrics(self, config: QueueManagerConfig, pcf) -> list[MetricRecord]:
         records: list[MetricRecord] = []
