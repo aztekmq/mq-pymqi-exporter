@@ -3,3 +3,5 @@ data
 src\mq_exporter\__pycache__
 tests\__pycache__
 pushit.bat
+tests/**/__pycache__/
+push_it.sh
