@@ -1,0 +1,1 @@
+"""MQ Prometheus exporter package."""

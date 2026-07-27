@@ -1,0 +1,203 @@
+#!/bin/sh
+# @(#) MQMBID sn=p1000-L260522 su=636cd2c400c26142b34fc88b442c5ecdb2aac902 pn=cmd/remote/runmqakm/runmqakm.sh
+# PID 5724-H72
+# Copyright IBM Corp. 2009, 2026
+#
+umask 077
+#
+#
+LIB_SFX=""
+UNAME=`uname`
+if [ -L "$0" ]
+  then
+    SCRIPTLOC=`ls -dl "$0" | awk '{print$NF}'`
+  else
+    SCRIPTLOC="$0"
+fi
+RELDIR=`dirname "$SCRIPTLOC"`
+SCRIPTDIR=`cd "$RELDIR" && pwd -P`
+MQINSTDIR=`dirname "$SCRIPTDIR"`
+
+if [ -z "${AMQ_GSKIT_LOCATION}" ]
+  then
+    if [ -d "${MQINSTDIR}/gskit9" ]
+      then
+        GSKDIR=${MQINSTDIR}/gskit9
+    elif [ -d "${MQINSTDIR}/gskit8" ]
+      then
+        GSKDIR=${MQINSTDIR}/gskit8
+    else
+        GSKDIR=${MQINSTDIR}/_gskit_unknown_
+    fi
+  else
+    GSKDIR=${AMQ_GSKIT_LOCATION}
+fi
+
+# If we didn't find a gskit8 directory then look in the default locs
+if [ "${UNAME}" = "AIX" ]
+  then
+    MQ_DEFAULT_INSTALLATION_PATH=/usr/mqm
+  else
+    MQ_DEFAULT_INSTALLATION_PATH=/opt/mqm
+fi
+if [ ! -d "${GSKDIR}" ]
+  then
+    if [ -d "${MQ_DEFAULT_INSTALLATION_PATH}/gskit9" ]
+      then
+        GSKDIR=${MQ_DEFAULT_INSTALLATION_PATH}/gskit9
+    elif [ -d "${MQ_DEFAULT_INSTALLATION_PATH}/gskit8" ]
+      then
+        GSKDIR=${MQ_DEFAULT_INSTALLATION_PATH}/gskit8
+    else
+        GSKDIR=${MQ_DEFAULT_INSTALLATION_PATH}/_gskit_unknown_
+    fi
+fi
+
+GSKVER=8
+# Use the appropriate command for either GSKit9 or GSKit8.
+if ( echo ${GSKDIR} | grep -q "gskit9" )
+  then
+    GSKCMD=gsk9certutil
+    GSKVER=9
+elif ( echo ${GSKDIR} | grep -q "gskit8" )
+  then
+    GSKCMD=gsk8capicmd
+    GSKVER=8
+else
+    GSKCMD=_gskit_unknown_
+    GSKVER=0
+fi
+
+if [ -x ${GSKDIR}/bin/${GSKCMD}_64 ]
+  then
+    CAPICMD=${GSKDIR}/bin/${GSKCMD}_64
+    LIB_SFX="64"
+  else
+    if [ -x ${GSKDIR}/bin/${GSKCMD} ]
+      then
+        CAPICMD=${GSKDIR}/bin/${GSKCMD}
+      else
+        echo "GSKIT NOT INSTALLED in ${GSKDIR}"
+        exit 99
+    fi
+fi
+
+GSKLIB=${GSKDIR}/lib${LIB_SFX}
+if [ "${UNAME}" = "AIX" ]
+  then
+    LIBPATH=${GSKLIB}:${LIBPATH}
+    export LIBPATH
+elif [ "${UNAME}" = "Darwin" ]
+  then
+    DYLD_LIBRARY_PATH=${GSKLIB}:${DYLD_LIBRARY_PATH}
+    export DYLD_LIBRARY_PATH
+else
+    LD_LIBRARY_PATH=${GSKLIB}:${LD_LIBRARY_PATH}
+    export LD_LIBRARY_PATH
+fi
+
+ARGS=
+ESCAPETYPE=0
+export ARGS
+ADDPQC=0
+SEENPQC=0
+SEENKEYDB=0
+SEENCREATE=0
+SEENCONVERT=0
+SEENCERT=0
+SEENEXPORT=0
+SEENIMPORT=0
+
+while [ $# -gt 0 ]
+do
+   case "$1" in
+      -dn)
+        ARGS="${ARGS} $1"
+        ESCAPETYPE=1
+        export ARGS
+        ;;
+      -pqc)
+        SEENPQC=1
+        ARGS="${ARGS} $1"
+        export ARGS
+        ;;
+      -keydb)
+        SEENKEYDB=1
+        ARGS="${ARGS} $1"
+        export ARGS
+        ;;
+      -create)
+        SEENCREATE=1
+        ARGS="${ARGS} $1"
+        export ARGS
+        ;;
+      -convert)
+        SEENCONVERT=1
+        ARGS="${ARGS} $1"
+        export ARGS
+        ;;
+      -cert)
+        SEENCERT=1
+        ARGS="${ARGS} $1"
+        export ARGS
+        ;;
+      -export)
+        SEENEXPORT=1
+        ARGS="${ARGS} $1"
+        export ARGS
+        ;;
+      -import)
+        SEENIMPORT=1
+        ARGS="${ARGS} $1"
+        export ARGS
+        ;;
+      -pw)
+        ESCAPETYPE=2
+        ARGS="${ARGS} $1"
+        export ARGS
+        ;;
+      -*)
+        ARGS="${ARGS} $1"
+        ESCAPETYPE=1
+        export ARGS
+        ;;
+      *)
+        if [ $ESCAPETYPE -eq 1 ]
+          then
+            ARGS="${ARGS} '$1'"
+        elif [ $ESCAPETYPE -eq 2 ]
+          then
+            VAR=$(echo "$1" | sed "s/['\"]/\\\\&/g")
+            ARGS="${ARGS} ${VAR}"
+        else
+            ARGS="${ARGS} \"$1\""
+        fi
+        export ARGS
+        ;;
+   esac
+
+   shift
+done
+
+# If we have not see -pqc but have seen -keydb -create or -keydb -convert or -cert -import or -cert -export
+if [ $SEENPQC -eq 0 ]
+  then
+    if [ $SEENKEYDB -eq 1 ] && [ $SEENCREATE -eq 1 ] || [ $SEENCONVERT -eq 1 ]
+      then
+        ADDPQC=1
+    elif [ $SEENCERT -eq 1 ] && [ $SEENIMPORT -eq 1 ] || [ $SEENEXPORT -eq 1 ]
+      then
+        ADDPQC=1
+    fi
+fi
+
+# GSKit 8.0.55.28 made pqc default to true, but this breaks FIPS mode.
+# Until FIPS ICC  catches up in GSKit 9 we will switch this back when appropriate.
+if [ $ADDPQC -eq 1 ] && [ $GSKVER -eq 8 ]
+  then
+    ARGS="${ARGS} -pqc false"
+    export ARGS
+fi
+
+eval "${CAPICMD}" "${ARGS}"
+exit $?

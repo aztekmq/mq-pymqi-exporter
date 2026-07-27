@@ -829,7 +829,7 @@ class MQCollectorTests(unittest.TestCase):
             def __init__(self, _name) -> None:
                 self.connected = False
 
-            def connect_tcp_client(self, *args) -> None:
+            def connect_with_options(self, *args, **kwargs) -> None:
                 self.connected = True
                 raise _FakeMQMIError(1, 2002)
 
@@ -838,8 +838,14 @@ class MQCollectorTests(unittest.TestCase):
 
         collector.pymqi = types.SimpleNamespace(
             QueueManager=_FakeQueueManager,
-            CD=lambda: object(),
-            CMQC=types.SimpleNamespace(MQRC_ALREADY_CONNECTED=2002),
+            CD=types.SimpleNamespace,
+            CMQC=types.SimpleNamespace(
+                MQRC_ALREADY_CONNECTED=2002,
+                MQCNO_NONE=0,
+                MQCNO_HANDLE_SHARE_BLOCK=32,
+                MQCHT_CLNTCONN=6,
+                MQXPT_TCP=2,
+            ),
             MQMIError=_FakeMQMIError,
         )
         config = QueueManagerConfig(
@@ -854,12 +860,16 @@ class MQCollectorTests(unittest.TestCase):
 
         self.assertTrue(qmgr.connected)
 
-    def test_get_or_create_session_uses_separate_stream_connection_for_system_topic_stream(self) -> None:
+    def test_get_or_create_session_uses_isolated_stream_connection(self) -> None:
         collector = PyMQICollector.__new__(PyMQICollector)
         collector._session_lock = threading.Lock()
         collector._sessions = {}
         connects = ["poll-qmgr", "stream-qmgr"]
-        collector._connect = lambda config: connects.pop(0)
+        connect_modes = []
+        def connect(config, *, isolated=False):
+            connect_modes.append(isolated)
+            return connects.pop(0)
+        collector._connect = connect
         collector._open_system_topic_subscriptions = lambda config, qmgr: [f"sub-on-{qmgr}"]
         collector._disconnect_qmgr = lambda qmgr, qmgr_name: None
         config = QueueManagerConfig(
@@ -876,6 +886,8 @@ class MQCollectorTests(unittest.TestCase):
         self.assertEqual(session.qmgr, "poll-qmgr")
         self.assertEqual(session.stream_qmgr, "stream-qmgr")
         self.assertEqual(session.subscriptions, ["sub-on-stream-qmgr"])
+        self.assertEqual(connect_modes, [False, True])
+        self.assertEqual(connects, [])
 
     def test_classify_system_topic_diagnostic_outcomes(self) -> None:
         collector = PyMQICollector.__new__(PyMQICollector)

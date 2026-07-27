@@ -1,0 +1,84 @@
+#!/bin/sh
+# @(#) MQMBID sn=p1000-L260522 su=636cd2c400c26142b34fc88b442c5ecdb2aac902 pn=cmd/install/unix/mqinstconf.sh
+#
+#   <copyright
+#   notice="lm-source-program"
+#   pids="5724-H72"
+#   years="2022"
+#   crc="4107220323" >
+#   Licensed Materials - Property of IBM
+#
+#   5724-H72
+#
+#   (C) Copyright IBM Corp. 2022 All Rights Reserved.
+#
+#   US Government Users Restricted Rights - Use, duplication or
+#   disclosure restricted by GSA ADP Schedule Contract with
+#   IBM Corp.
+#   </copyright>
+#
+####################################################################
+# Script to execute specific command tasks during MQ installation  #
+# and configuration. The command tasks are added to instinfo.tsk   #
+# from command specific config files (e.g. ldconfig.lnk).          #
+####################################################################
+
+####################################################################
+## Debug function                                                 ##
+####################################################################
+mqdebug()
+{
+  if [ -n "$*" ] && [ ! -z "${INST_DEBUG}" ] ; then
+    if [ -z "$MQDEBUGLOG" ] ; then
+      MQDEBUGLOG="/tmp/mqdebug.out"
+    fi
+
+    date | tee -a $MQDEBUGLOG
+    echo "$*" | tee -a $MQDEBUGLOG
+  fi
+  return 0
+}
+
+####################################################################
+## Commands to create/update ldconfig configuration file mqm.conf ##
+## when setting/unsetting primary installation                    ##
+####################################################################
+##
+## To add /usr/lib64 to /etc/ld.so.conf.d/mqm.conf
+## This command is executed when setting primary installation
+MQ_LDCONF_ADD_DEF_LIBPATH_MQMCONF=1
+#
+## To delete /usr/lib64 from /etc/ld.so.conf.d/mqm.conf
+## This command is executed when unsetting primary installation
+MQ_LDCONF_DEL_DEF_LIBPATH_MQMCONF=2
+
+CMD=$1
+
+case $CMD in
+  $MQ_LDCONF_ADD_DEF_LIBPATH_MQMCONF)
+    if [ -d /etc/ld.so.conf.d ] ; then
+      if [ `uname -p` != 'ppc64le' ] ; then
+        mqdebug "Adding /usr/lib64 to mqm.conf"
+        grep -E "[[:blank:]]*/usr/lib64[[:blank:]]*$" /etc/ld.so.conf.d/mqm.conf > /dev/null
+        if [ $? -ne 0 ] ; then
+          /usr/bin/echo "/usr/lib64" >> /etc/ld.so.conf.d/mqm.conf
+        fi
+      fi
+    fi
+    ;;
+
+  $MQ_LDCONF_DEL_DEF_LIBPATH_MQMCONF)
+    if [ -d /etc/ld.so.conf.d ] ; then
+      if [ `uname -p` != 'ppc64le' ] ; then
+        mqdebug "Deleting /usr/lib64 from mqm.conf"
+        /usr/bin/sed  -i '/[[:blank:]]*\/usr\/lib64[[:blank:]]*$/d' /etc/ld.so.conf.d/mqm.conf
+      fi
+    fi
+    ;;
+
+  *)
+  exit 1
+  ;;
+esac
+
+exit 0

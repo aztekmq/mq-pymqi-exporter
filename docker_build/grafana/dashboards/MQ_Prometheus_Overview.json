@@ -1,0 +1,1982 @@
+{
+  "annotations": [
+    {
+      "kind": "AnnotationQuery",
+      "spec": {
+        "builtIn": true,
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "query": {
+          "datasource": {
+            "name": "grafana"
+          },
+          "group": "grafana",
+          "kind": "DataQuery",
+          "spec": {
+            "limit": 100,
+            "matchAny": false,
+            "tags": [],
+            "type": "dashboard"
+          },
+          "version": "v0"
+        }
+      }
+    }
+  ],
+  "cursorSync": "Off",
+  "editable": true,
+  "elements": {
+    "panel-1": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_queue_mqget_count{queue=~\"APP.*\"} ",
+                      "format": "time_series",
+                      "instant": false,
+                      "intervalFactor": 2,
+                      "legendFormat": "Get: {{queue}}",
+                      "metric": "",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_queue_mqput_mqput1_count{queue=~\"APP.*\"}",
+                      "format": "time_series",
+                      "intervalFactor": 2,
+                      "legendFormat": "Put: {{queue}}",
+                      "metric": "",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_queue_depth{queue=~\"APP.*\"}",
+                      "format": "time_series",
+                      "intervalFactor": 2,
+                      "legendFormat": "Depth: {{queue}}",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "C"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_queue_oldest_message_age{queue=~\"APP.*\"}",
+                      "format": "time_series",
+                      "intervalFactor": 1,
+                      "legendFormat": "Oldest msg {{queue}}@{{qmgr}}"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "D"
+                }
+              }
+            ],
+            "queryOptions": {
+              "interval": "10s"
+            },
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 1,
+        "links": [],
+        "title": "Queue Activity",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "stepAfter",
+                  "lineWidth": 2,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 80
+                    }
+                  ]
+                },
+                "unit": "short"
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byRegexp",
+                    "options": "/Oldest msg/"
+                  },
+                  "properties": [
+                    {
+                      "id": "unit",
+                      "value": "s"
+                    },
+                    {
+                      "id": "min",
+                      "value": 0
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "enableFacetedFilter": false,
+                "overflow": "ellipsis",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0"
+        }
+      }
+    },
+    "panel-10": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_channel_status_squash{qmgr!=\"QML3\"}+0",
+                      "format": "table",
+                      "instant": true,
+                      "intervalFactor": 1,
+                      "legendFormat": ""
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_channel_status{qmgr!=\"QML3\"}+0",
+                      "format": "table",
+                      "instant": true,
+                      "intervalFactor": 1
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              }
+            ],
+            "queryOptions": {
+              "hideTimeOverride": true,
+              "timeFrom": "15m"
+            },
+            "transformations": [
+              {
+                "group": "merge",
+                "kind": "Transformation",
+                "spec": {
+                  "options": {
+                    "reducers": []
+                  }
+                }
+              },
+              {
+                "group": "organize",
+                "kind": "Transformation",
+                "spec": {
+                  "options": {
+                    "excludeByName": {},
+                    "indexByName": {
+                      "Time": 0,
+                      "Value #A": 11,
+                      "Value #B": 12,
+                      "channel": 2,
+                      "connname": 3,
+                      "description": 4,
+                      "instance": 5,
+                      "job": 6,
+                      "jobname": 7,
+                      "platform": 8,
+                      "qmgr": 1,
+                      "rqmname": 9,
+                      "type": 10
+                    },
+                    "renameByName": {}
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "description": "",
+        "id": 10,
+        "links": [],
+        "title": "Channel Status",
+        "vizConfig": {
+          "group": "table",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "custom": {
+                  "align": "auto",
+                  "cellOptions": {
+                    "type": "auto"
+                  },
+                  "footer": {
+                    "reducers": []
+                  },
+                  "inspect": false
+                },
+                "decimals": 2,
+                "displayName": "",
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 80
+                    }
+                  ]
+                },
+                "unit": "short"
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Value #A"
+                  },
+                  "properties": [
+                    {
+                      "id": "displayName",
+                      "value": "State"
+                    },
+                    {
+                      "id": "unit",
+                      "value": "short"
+                    },
+                    {
+                      "id": "decimals",
+                      "value": 0
+                    },
+                    {
+                      "id": "custom.cellOptions",
+                      "value": {
+                        "mode": "gradient",
+                        "type": "color-background"
+                      }
+                    },
+                    {
+                      "id": "custom.align",
+                      "value": "center"
+                    },
+                    {
+                      "id": "thresholds",
+                      "value": {
+                        "mode": "absolute",
+                        "steps": [
+                          {
+                            "color": "rgba(50, 172, 45, 0.97)",
+                            "value": 0
+                          },
+                          {
+                            "color": "rgba(237, 129, 40, 0.89)",
+                            "value": 1
+                          },
+                          {
+                            "color": "rgba(245, 54, 54, 0.9)",
+                            "value": 2
+                          },
+                          {
+                            "color": "rgba(128, 128, 128, 0.9)",
+                            "value": 3
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "id": "mappings",
+                      "value": [
+                        {
+                          "options": {
+                            "0": {
+                              "color": "dark-green",
+                              "index": 0,
+                              "text": "Running"
+                            },
+                            "1": {
+                              "color": "orange",
+                              "index": 1,
+                              "text": "Transition"
+                            },
+                            "2": {
+                              "color": "dark-red",
+                              "index": 2,
+                              "text": "Stopped"
+                            },
+                            "3": {
+                              "color": "gray",
+                              "index": 3,
+                              "text": "Unknown"
+                            }
+                          },
+                          "type": "value"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "channel"
+                  },
+                  "properties": [
+                    {
+                      "id": "displayName",
+                      "value": "Channel Name"
+                    },
+                    {
+                      "id": "unit",
+                      "value": "short"
+                    },
+                    {
+                      "id": "decimals",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.align"
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "qmgr"
+                  },
+                  "properties": [
+                    {
+                      "id": "displayName",
+                      "value": "Local QMgr"
+                    },
+                    {
+                      "id": "unit",
+                      "value": "short"
+                    },
+                    {
+                      "id": "decimals",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.align"
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Value #B"
+                  },
+                  "properties": [
+                    {
+                      "id": "displayName",
+                      "value": "Status"
+                    },
+                    {
+                      "id": "unit",
+                      "value": "short"
+                    },
+                    {
+                      "id": "custom.align"
+                    },
+                    {
+                      "id": "decimals",
+                      "value": 0
+                    },
+                    {
+                      "id": "mappings",
+                      "value": [
+                        {
+                          "options": {
+                            "0": {
+                              "color": "dark-green",
+                              "index": 0,
+                              "text": "INACTIVE"
+                            },
+                            "1": {
+                              "color": "orange",
+                              "index": 1,
+                              "text": "BINDING"
+                            },
+                            "2": {
+                              "color": "orange",
+                              "index": 2,
+                              "text": "STARTING"
+                            },
+                            "3": {
+                              "color": "dark-green",
+                              "index": 3,
+                              "text": "RUNNING"
+                            },
+                            "4": {
+                              "color": "orange",
+                              "index": 4,
+                              "text": "STOPPING"
+                            },
+                            "5": {
+                              "color": "dark-red",
+                              "index": 5,
+                              "text": "RETRYING"
+                            },
+                            "6": {
+                              "color": "dark-red",
+                              "index": 6,
+                              "text": "STOPPED"
+                            },
+                            "7": {
+                              "color": "orange",
+                              "index": 7,
+                              "text": "REQUESTING"
+                            },
+                            "8": {
+                              "color": "dark-red",
+                              "index": 8,
+                              "text": "PAUSED"
+                            },
+                            "9": {
+                              "color": "dark-red",
+                              "index": 9,
+                              "text": "DISCONNECTED"
+                            },
+                            "13": {
+                              "color": "orange",
+                              "index": 13,
+                              "text": "INITIALIZING"
+                            },
+                            "14": {
+                              "color": "orange",
+                              "index": 14,
+                              "text": "SWITCHING"
+                            }
+                          },
+                          "type": "value"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Value #C"
+                  },
+                  "properties": [
+                    {
+                      "id": "displayName",
+                      "value": "Type"
+                    },
+                    {
+                      "id": "unit",
+                      "value": "short"
+                    },
+                    {
+                      "id": "custom.align"
+                    },
+                    {
+                      "id": "decimals",
+                      "value": 0
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "type"
+                  },
+                  "properties": [
+                    {
+                      "id": "displayName",
+                      "value": "Type"
+                    },
+                    {
+                      "id": "unit",
+                      "value": "short"
+                    },
+                    {
+                      "id": "decimals",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.align"
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "connname"
+                  },
+                  "properties": [
+                    {
+                      "id": "displayName",
+                      "value": "Connection Name"
+                    },
+                    {
+                      "id": "unit",
+                      "value": "short"
+                    },
+                    {
+                      "id": "decimals",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.align"
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "rqmname"
+                  },
+                  "properties": [
+                    {
+                      "id": "displayName",
+                      "value": "Remote QMgr"
+                    },
+                    {
+                      "id": "unit",
+                      "value": "short"
+                    },
+                    {
+                      "id": "decimals",
+                      "value": 2
+                    },
+                    {
+                      "id": "custom.align"
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "instance"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.hideFrom.viz",
+                      "value": true
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byRegexp",
+                    "options": "job.*"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.hideFrom.viz",
+                      "value": true
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Time"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.hideFrom.viz",
+                      "value": true
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "description"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.hideFrom.viz",
+                      "value": true
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "platform"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.hideFrom.viz",
+                      "value": true
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "cellHeight": "sm",
+              "showHeader": true,
+              "sortBy": [
+                {
+                  "desc": false,
+                  "displayName": "Local QMgr"
+                }
+              ]
+            }
+          },
+          "version": "13.1.0"
+        }
+      }
+    },
+    "panel-12": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_channel_messages{type!=\"SVRCONN\"}",
+                      "format": "time_series",
+                      "intervalFactor": 1,
+                      "legendFormat": "{{channel}} [{{type}}]"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 12,
+        "links": [],
+        "title": "Channel Messages",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 80
+                    }
+                  ]
+                },
+                "unit": "short"
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "enableFacetedFilter": false,
+                "overflow": "ellipsis",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0"
+        }
+      }
+    },
+    "panel-2": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_system_cpu_time_percentage",
+                      "format": "time_series",
+                      "intervalFactor": 2,
+                      "legendFormat": "System CPU%: {{platform}}",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_user_cpu_time_percentage",
+                      "format": "time_series",
+                      "intervalFactor": 2,
+                      "legendFormat": "User CPU%: {{platform}}",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 2,
+        "links": [],
+        "title": "CPU",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineWidth": 2,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": true,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "min": 0,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 80
+                    }
+                  ]
+                },
+                "unit": "percent"
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "enableFacetedFilter": false,
+                "overflow": "ellipsis",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0"
+        }
+      }
+    },
+    "panel-3": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_log_write_latency_seconds",
+                      "intervalFactor": 2,
+                      "legendFormat": "Latency",
+                      "metric": "ibmmq_qmgr_log_write_latency_us",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 3,
+        "links": [],
+        "title": "Log write latency",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineWidth": 2,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": true,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 80
+                    }
+                  ]
+                },
+                "unit": "s"
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "enableFacetedFilter": false,
+                "overflow": "ellipsis",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0"
+        }
+      }
+    },
+    "panel-4": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_queue_manager_file_system_in_use_bytes",
+                      "format": "time_series",
+                      "intervalFactor": 2,
+                      "legendFormat": "QMgr file system - in use [{{qmgr}}/{{platform}}]",
+                      "metric": "ibmmq_qmgr_queue_manager_file_system_bytes_in_use_MB",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "exemplar": true,
+                      "expr": "ibmmq_qmgr_log_file_system_in_use_bytes",
+                      "format": "time_series",
+                      "interval": "",
+                      "intervalFactor": 2,
+                      "legendFormat": "Log file system - in use [{{qmgr}}/{{platform}}]",
+                      "metric": "ibmmq_qmgr_log_file_system_in_use_bytes",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "exemplar": true,
+                      "expr": "100 - ibmmq_qmgr_mq_errors_file_system_free_space_percentage",
+                      "format": "time_series",
+                      "instant": false,
+                      "interval": "",
+                      "intervalFactor": 1,
+                      "legendFormat": "File system usage %"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "C"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 4,
+        "links": [],
+        "title": "File system",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineWidth": 2,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": true,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 80
+                    }
+                  ]
+                },
+                "unit": "bytes"
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "Log %"
+                  },
+                  "properties": [
+                    {
+                      "id": "unit",
+                      "value": "percent"
+                    },
+                    {
+                      "id": "min",
+                      "value": 0
+                    },
+                    {
+                      "id": "max",
+                      "value": 100
+                    }
+                  ]
+                },
+                {
+                  "matcher": {
+                    "id": "byRegexp",
+                    "options": "/File system usage %/"
+                  },
+                  "properties": [
+                    {
+                      "id": "unit",
+                      "value": "percent"
+                    },
+                    {
+                      "id": "min",
+                      "value": 0
+                    },
+                    {
+                      "id": "max",
+                      "value": 100
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "enableFacetedFilter": false,
+                "overflow": "ellipsis",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0"
+        }
+      }
+    },
+    "panel-5": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_non_durable_subscriber_low_water_mark",
+                      "format": "time_series",
+                      "intervalFactor": 2,
+                      "legendFormat": "ND Sub - low-water",
+                      "metric": "ibmmq_qmgr_non_durable_subscriber_low_water_mark",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_non_durable_subscriber_high_water_mark",
+                      "format": "time_series",
+                      "intervalFactor": 2,
+                      "legendFormat": "ND Sub - high-water",
+                      "metric": "ibmmq_qmgr_non_durable_subscriber_high_water_mark",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_create_non_durable_subscription",
+                      "format": "time_series",
+                      "intervalFactor": 2,
+                      "legendFormat": "ND MQSUB calls",
+                      "metric": "ibmmq_qmgr_create_non_durable_subscription",
+                      "step": 2
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "C"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 5,
+        "links": [],
+        "title": "Subscriptions",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineWidth": 2,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": true,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "min": 0,
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 80
+                    }
+                  ]
+                },
+                "unit": "short"
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "enableFacetedFilter": false,
+                "overflow": "ellipsis",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0"
+        }
+      }
+    },
+    "panel-6": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "exemplar": true,
+                      "expr": "ibmmq_qmgr_put_non_persistent_messages_bytes",
+                      "instant": true,
+                      "interval": "",
+                      "intervalFactor": 2,
+                      "legendFormat": "Non-persistent bytes PUT",
+                      "metric": "ibmmq_qmgr_put_persistent_messages_bytes",
+                      "step": 20
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {
+              "maxDataPoints": 100
+            },
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 6,
+        "links": [],
+        "title": "Non-persistent Bytes Put",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "mappings": [
+                  {
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "text": "N/A"
+                      }
+                    },
+                    "type": "special"
+                  }
+                ],
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 80
+                    }
+                  ]
+                },
+                "unit": "none"
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "none",
+              "graphMode": "none",
+              "justifyMode": "auto",
+              "orientation": "horizontal",
+              "percentChangeColorMode": "standard",
+              "reduceOptions": {
+                "calcs": [
+                  "mean"
+                ],
+                "fields": "",
+                "values": false
+              },
+              "showPercentChange": false,
+              "text": {},
+              "textMode": "auto",
+              "wideLayout": true
+            }
+          },
+          "version": "13.1.0"
+        }
+      }
+    },
+    "panel-8": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_published_to_subscribers_message_count",
+                      "format": "time_series",
+                      "intervalFactor": 1,
+                      "legendFormat": "Publications: {{qmgr}}"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_interval_mqput_mqput1_total_count",
+                      "format": "time_series",
+                      "intervalFactor": 1,
+                      "legendFormat": "Put: {{qmgr}}"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "D"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_interval_destructive_get_total_count",
+                      "format": "time_series",
+                      "intervalFactor": 1,
+                      "legendFormat": "Get: {{qmgr}}"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "000000001"
+                    },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "ibmmq_qmgr_persistent_message_browse_count + ibmmq_qmgr_non_persistent_message_browse_count",
+                      "format": "time_series",
+                      "intervalFactor": 1,
+                      "legendFormat": "Browse {{ qmgr}}"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "C"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "",
+        "id": 8,
+        "links": [
+          {
+            "targetBlank": true,
+            "title": "Details",
+            "url": "http://klein.hursley.uk.ibm.com:3000/d/8G1DuBDiz/message-details?orgId=1&refresh=10s"
+          }
+        ],
+        "title": "Messages",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "palette-classic"
+                },
+                "custom": {
+                  "axisBorderShow": false,
+                  "axisCenteredZero": false,
+                  "axisColorMode": "text",
+                  "axisLabel": "",
+                  "axisPlacement": "auto",
+                  "barAlignment": 0,
+                  "barWidthFactor": 0.6,
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "gradientMode": "none",
+                  "hideFrom": {
+                    "legend": false,
+                    "tooltip": false,
+                    "viz": false
+                  },
+                  "insertNulls": false,
+                  "lineInterpolation": "linear",
+                  "lineWidth": 1,
+                  "pointSize": 5,
+                  "scaleDistribution": {
+                    "type": "linear"
+                  },
+                  "showPoints": "never",
+                  "showValues": false,
+                  "spanNulls": false,
+                  "stacking": {
+                    "group": "A",
+                    "mode": "none"
+                  },
+                  "thresholdsStyle": {
+                    "mode": "off"
+                  }
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 80
+                    }
+                  ]
+                },
+                "unit": "short"
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": {
+                "clustering": -1,
+                "multiLane": false
+              },
+              "legend": {
+                "calcs": [],
+                "displayMode": "list",
+                "enableFacetedFilter": false,
+                "overflow": "ellipsis",
+                "placement": "bottom",
+                "showLegend": true
+              },
+              "tooltip": {
+                "hideZeros": false,
+                "mode": "multi",
+                "sort": "none"
+              }
+            }
+          },
+          "version": "13.1.0"
+        }
+      }
+    }
+  },
+  "layout": {
+    "kind": "GridLayout",
+    "spec": {
+      "items": [
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-1"
+            },
+            "height": 7,
+            "width": 18,
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-8"
+            },
+            "height": 7,
+            "width": 6,
+            "x": 18,
+            "y": 0
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-2"
+            },
+            "height": 7,
+            "width": 8,
+            "x": 0,
+            "y": 7
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-3"
+            },
+            "height": 7,
+            "width": 8,
+            "x": 8,
+            "y": 7
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-4"
+            },
+            "height": 7,
+            "width": 8,
+            "x": 16,
+            "y": 7
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-5"
+            },
+            "height": 7,
+            "width": 3,
+            "x": 0,
+            "y": 14
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-10"
+            },
+            "height": 7,
+            "width": 13,
+            "x": 3,
+            "y": 14
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-12"
+            },
+            "height": 7,
+            "width": 5,
+            "x": 16,
+            "y": 14
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
+              "name": "panel-6"
+            },
+            "height": 7,
+            "width": 3,
+            "x": 21,
+            "y": 14
+          }
+        }
+      ]
+    }
+  },
+  "links": [],
+  "liveNow": false,
+  "preload": false,
+  "tags": [],
+  "timeSettings": {
+    "autoRefresh": "10s",
+    "autoRefreshIntervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "1d"
+    ],
+    "fiscalYearStartMonth": 0,
+    "from": "now-15m",
+    "hideTimepicker": false,
+    "timezone": "browser",
+    "to": "now"
+  },
+  "title": "MQ Prometheus",
+  "variables": []
+}

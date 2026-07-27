@@ -1,0 +1,54 @@
+# IBM MQ runtime data
+docker_build/data/
+docker_build/data/**
+docker_build/qmgrs/
+docker_build/qmgrs/**
+docker_build/volumes/
+docker_build/volumes/**
+
+# Generated MQ and monitoring data
+**/data/QM*/
+**/data/QM*/**
+**/qmdata/
+**/qmdata/**
+**/mqdata/
+**/mqdata/**
+
+# Python artifacts
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+**/*.egg-info/
+build/
+dist/
+
+# Git and editor files
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+
+# Docker-generated files not needed as source
+docker_build/docker-compose.yml
+
+# Preserve the required build inputs
+!requirements.txt
+!pyproject.toml
+!setup.py
+!setup.cfg
+!README*
+!LICENSE*
+!src/
+!src/**
+!examples/
+!examples/**
+!docker_build/mq-pymqi-exporter/
+!docker_build/mq-pymqi-exporter/**

@@ -1,0 +1,245 @@
+#!/bin/bash
+# -----------------------------------------------------------------------------
+# File Name : setmqenv
+# Descriptive File Name : Set the environment for IBM MQ
+# -----------------------------------------------------------------------------
+#   <copyright
+#   notice="lm-source-program"
+#   pids="5724-H72"
+#   years="2010,2024"
+#   crc="436476459" >
+#   Licensed Materials - Property of IBM
+#
+#   5724-H72
+#
+#   (C) Copyright IBM Corp. 2010, 2024 All Rights Reserved.
+#
+#   US Government Users Restricted Rights - Use, duplication or
+#   disclosure restricted by GSA ADP Schedule Contract with
+#   IBM Corp.
+#   </copyright>
+# -----------------------------------------------------------------------------
+# @(#) MQMBID sn=p1000-L260522 su=636cd2c400c26142b34fc88b442c5ecdb2aac902 pn=cmd/tools/setmqenv/setmqenv.sh
+# -----------------------------------------------------------------------------
+# File Description :
+#
+# This script is used to set the environment for IBM MQ. The arguments
+# specified are passed directly to crtmqenv whose usage is as follows. At
+# least one of -m, -n, -p, -r or -s must be specified. Use -s to set up the
+# environment for the installation that this script comes from.
+#
+# crtmqenv usage:
+# -j 2.0|3.0         : Set up the environment for JMS 2.0 or 3.0 (Default: 2.0)
+# -m name            : Set up the environment for the specified queue manager
+# -n name            : Set up the environment for the specified installation
+# -p name            : Set up the environment for the installation with the
+#                      specified path
+# -r                 : Remove IBM MQ from the environment
+# -s                 : Set up the environment for the installation that this
+#                      script comes from
+# -l                 : Set up the library path, appending to the current value
+# -k                 : Set up the library path at the start of the current
+#                      value
+# -x 32|64           : Set up either a 32 or 64-bit environment
+#
+# The MQ_ENV_OPTIONS environment variable is used to specify options to
+# crtmqenv, taking precedence over any positional parameters passed to the
+# script.
+#
+# If this script is not sourced by a Bash shell then LCL_MQ_INSTALLATION_PATH
+# must be set so that this script knows where MQ is installed.
+#
+# -----------------------------------------------------------------------------
+
+MQ_RETVAL=0
+
+crtmqenv_platform=`uname`
+case $crtmqenv_platform in
+AIX)
+    MQ_DEFAULT_INSTALLATION_PATH=/usr/mqm
+    MQ_LD_LIBRARY_PATH=${LIBPATH:-""}
+    unset LIBPATH
+    ;;
+
+OS400)
+    MQ_DEFAULT_INSTALLATION_PATH=/QIBM/ProdData/mqm
+    MQ_LD_LIBRARY_PATH=${LIBPATH:-""}
+    unset LIBPATH
+    ;;
+
+*)
+    MQ_DEFAULT_INSTALLATION_PATH=/opt/mqm
+    MQ_LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-""}
+    unset LD_LIBRARY_PATH
+    ;;
+esac
+
+if [ -n "$BASH_SOURCE" ]; then
+    # If this script has been sourced by a Bash shell then we can use BASH_SOURCE
+    # to determine the installation from which the command was issued.
+    crtmqenv_path=$(dirname "${BASH_SOURCE[0]}")/../bin
+elif [ -z "$LCL_MQ_INSTALLATION_PATH" ]; then
+    # If this script is not sourced by a Bash shell then LCL_MQ_INSTALLATION_PATH
+    # must be set so that this script knows where MQ is installed. We'll guess
+    # at the current directory, but that is unlikely to be correct.
+    crtmqenv_path=./bin
+else
+    crtmqenv_path=$LCL_MQ_INSTALLATION_PATH/bin
+fi
+
+# If we can't find the MQ executables then we cannot proceed.
+if [ ! -x "$crtmqenv_path/crtmqenv" ]; then
+    printf "AMQ8634E: When not sourcing from a Bash shell, set LCL_MQ_INSTALLATION_PATH\n"
+    printf "to the location of the installation from where you are running the setmqenv\n"
+    printf "command."
+    unset crtmqenv_path
+fi
+
+# Because this script wants to set environment variables in the current
+# shell, it needs to be sourced in order to succeed, otherwise all changes
+# will be lost when the script ends.
+case $0 in
+-*)
+    # $0 starts with dash so we can assume it is not setmqenv
+    ;;
+ *)
+    # If the zsh evaluation context doesn't end with :file, the script has not been sourced
+    if [ -n "$ZSH_EVAL_CONTEXT" ]; then
+        case $ZSH_EVAL_CONTEXT in
+            *:file)
+                # Force word splitting when running under zsh
+                setopt shwordsplit
+                ;;
+            *)
+                if [ -n "$crtmqenv_path" ]; then
+                  $crtmqenv_path/mqrc -b amq8595 1>&2
+                fi
+                exit 20
+                ;;
+        esac
+    # If $0 is setmqenv, the script has not been sourced
+    elif [ `basename $0` = "setmqenv" ]
+    then
+        case $crtmqenv_platform in
+        OS400)
+            /QSYS.LIB/QMQM.LIB/MQRC.PGM -b amq8595 1>&2
+            ;;
+
+        *)
+            if [ -n "$crtmqenv_path" ]; then
+              $crtmqenv_path/mqrc -b amq8595 1>&2
+            fi
+            ;;
+        esac
+        exit 20
+    fi
+    ;;
+esac
+
+# The MQ_ENV_OPTIONS environment variable is used to specify options to
+# crtmqenv, taking precedence over any positional parameters passed to the
+# script.
+crtmqenv_options=${MQ_ENV_OPTIONS:-""}
+if [ -z "$crtmqenv_options" ]
+then
+    # If MQ_ENV_OPTIONS isn't set and no positional parameters were specified,
+    # either the script was called incorrectly or the shell being used does not
+    # pass parameters when a script is being sourced. It is assumed that the
+    # environment for the installation that this script comes from should be
+    # set up, but a message is displayed to indicate this.
+    if [ $# -eq 0 ]
+    then
+        case $crtmqenv_platform in
+        OS400)
+            /QSYS.LIB/QMQM.LIB/MQRC.PGM -b amq8588 1>&2
+            ;;
+
+        *)
+            if [ -n "$crtmqenv_path" ]; then
+              $crtmqenv_path/mqrc -b amq8588 1>&2
+            fi
+            ;;
+        esac
+        crtmqenv_options=-s
+        MQ_RETVAL=10
+    # Pass the positional parameters onto crtmqenv.
+    else
+        crtmqenv_options=$*
+    fi
+fi
+
+# Ensure that our private LD_LIBRARY_PATH value is visible to crtmqenv
+# note: This is subsequently unset at the end of the script
+export MQ_LD_LIBRARY_PATH
+
+case $crtmqenv_platform in
+OS400)
+    crtmqenv_out=`/QSYS.LIB/QMQM.LIB/CRTMQENV.PGM -z $crtmqenv_options`
+    crtmqenv_rc=$?
+    ;;
+
+*)
+    if [ -n "$crtmqenv_path" ]; then
+        crtmqenv_out=`$crtmqenv_path/crtmqenv -z $crtmqenv_options`
+        crtmqenv_rc=$?
+    else
+        crtmqenv_rc=20
+    fi
+    ;;
+esac
+
+if [ $crtmqenv_rc -eq 0 ]
+then
+    crtmqenv_savedifs=$IFS
+    # Set IFS to a newline character. This method should work on all platforms.
+    IFS="
+"
+    
+    for crtmqenv_line in $crtmqenv_out
+    do
+        crtmqenv_var=`echo $crtmqenv_line | cut -d '=' -f1`
+        crtmqenv_value=`echo $crtmqenv_line | cut -d '=' -f2-`
+        if [ -z "$crtmqenv_value" ]
+        then
+            eval "unset $crtmqenv_var"
+        else
+            eval "$crtmqenv_line"
+            eval "export $crtmqenv_var"
+        fi
+    done
+    
+    IFS=$crtmqenv_savedifs
+else
+    echo "$crtmqenv_out"
+    if [ -n "$MQ_LD_LIBRARY_PATH" ]
+    then
+        case $crtmqenv_platform in
+        AIX)
+            LIBPATH=$MQ_LD_LIBRARY_PATH
+            export LIBPATH
+            ;;
+
+        *)
+            LD_LIBRARY_PATH=$MQ_LD_LIBRARY_PATH
+            export LD_LIBRARY_PATH
+            ;;
+        esac
+    fi
+
+    MQ_RETVAL=$crtmqenv_rc
+fi
+
+
+unset crtmqenv_savedifs
+unset crtmqenv_var
+unset crtmqenv_value
+unset crtmqenv_line
+unset crtmqenv_rc
+unset crtmqenv_out
+unset crtmqenv_options
+unset MQ_LD_LIBRARY_PATH
+unset MQ_DEFAULT_INSTALLATION_PATH
+unset crtmqenv_path
+unset crtmqenv_platform
+
+sh -c "exit $MQ_RETVAL"
