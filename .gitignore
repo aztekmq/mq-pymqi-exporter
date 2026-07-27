@@ -5,3 +5,9 @@ tests\__pycache__
 pushit.bat
 tests/**/__pycache__/
 push_it.sh
+docker_build/grafana-data/
+docker_build/prometheus-data/
+docker_build/grafana/
+docker_build/prometheus/
+docker_build/docker-compose.grafana.yml
+docker_build/docker-compose.prometheus.yml

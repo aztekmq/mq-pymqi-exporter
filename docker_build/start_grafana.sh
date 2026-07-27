@@ -34,8 +34,15 @@ REPO_DASHBOARDS_DIR="../dashboards"
 GRAFANA_PORT=3000
 PROMETHEUS_URL="http://prometheus-local-monitoring:9090"
 NETWORK_NAME="prometheus_local_monitoring_default"
-ADMIN_USER="admin"
-ADMIN_PASSWORD="admin"
+
+# Grafana login credentials. Change GRAFANA_ADMIN_PASSWORD here, provide it as
+# an environment variable, or use -W on the command line. Precedence:
+# -W option > environment variable > value below.
+GRAFANA_ADMIN_USER="${GRAFANA_ADMIN_USER:-admin}"
+GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-passw0rd}"
+
+ADMIN_USER="$GRAFANA_ADMIN_USER"
+ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD"
 
 print_usage() {
   cat <<EOF
@@ -80,6 +87,7 @@ check_port_available() {
 
 check_command docker
 check_command python3
+check_command curl
 
 if ! docker compose version >/dev/null 2>&1; then
   echo "ERROR: Docker Compose support is not available. Ensure Docker with Compose v2 is installed." >&2
@@ -180,13 +188,32 @@ if [[ $? -ne 0 ]]; then
   exit 1
 fi
 
+# The container can be running before Grafana has opened its database and HTTP
+# listener. Running the CLI during that window can contend with initial
+# migrations and time out, so wait for the unauthenticated health endpoint.
+GRAFANA_URL="http://127.0.0.1:$GRAFANA_PORT"
+GRAFANA_READY=false
+for _ in $(seq 1 60); do
+  if curl --silent --fail --max-time 2 "$GRAFANA_URL/api/health" >/dev/null; then
+    GRAFANA_READY=true
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$GRAFANA_READY" != "true" ]]; then
+  echo "ERROR: Grafana did not become ready within 60 seconds." >&2
+  docker logs --tail 100 "$CONTAINER_NAME" >&2 || true
+  exit 1
+fi
+
 if [[ "$ADMIN_USER" == "admin" ]]; then
   timeout 30s docker exec "$CONTAINER_NAME" grafana cli admin reset-admin-password "$ADMIN_PASSWORD" >/dev/null 2>&1 || {
     echo "WARNING: Grafana started, but the admin password reset command failed." >&2
   }
 fi
 
-GRAFANA_URL="http://127.0.0.1:$GRAFANA_PORT" \
+GRAFANA_URL="$GRAFANA_URL" \
 GRAFANA_USER="$ADMIN_USER" \
 GRAFANA_PASSWORD="$ADMIN_PASSWORD" \
 DASHBOARDS_DIR="$DASHBOARDS_DIR" \

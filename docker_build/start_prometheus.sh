@@ -2,23 +2,24 @@
 # =============================================================================
 # Script Name : build_prometheus.sh
 # Description : Build and start a local Prometheus container that scrapes the
-#               exporter running on the host.
+#               exporter over their shared Docker network.
 #
 # Usage:
-#   ./build_prometheus.sh [-h host] [-p scrape_ports] [-u scrape_path]
+#   ./start_prometheus.sh [-h host] [-p scrape_ports] [-u scrape_path]
 #                         [-P prometheus_port] [-i scrape_interval]
-#                         [-e evaluation_interval]
+#                         [-e evaluation_interval] [-n exporter_network]
 #
 # Defaults:
-#   host               host.docker.internal
-#   scrape_ports       9157,9158,9159
+#   host               mq-pymqi-exporter
+#   scrape_ports       9157
 #   scrape_path        /metrics
-#   prometheus_port    9090
+#   prometheus_port    9091
 #   scrape_interval    15s
 #   evaluation_interval 15s
+#   exporter_network   docker_build_default
 #
 # Example:
-#   ./start_prometheus.sh -h host.docker.internal -p 9157,9158,9159 -P 9090
+#   ./start_prometheus.sh
 # =============================================================================
 
 set -u
@@ -31,12 +32,13 @@ CONFIG_FILE="$PROMETHEUS_DIR/prometheus.yml"
 DOCKERFILE="$PROMETHEUS_DIR/Dockerfile"
 COMPOSE_FILE="docker-compose.prometheus.yml"
 
-SCRAPE_HOST="host.docker.internal"
-SCRAPE_PORTS="9157,9158,9159"
+SCRAPE_HOST="mq-pymqi-exporter"
+SCRAPE_PORTS="9157"
 SCRAPE_PATH="/metrics"
 PROMETHEUS_PORT=9091
 SCRAPE_INTERVAL="15s"
 EVALUATION_INTERVAL="15s"
+EXPORTER_NETWORK="docker_build_default"
 
 print_usage() {
   cat <<EOF
@@ -49,11 +51,12 @@ Options:
   -P PROMETHEUS_PORT    Prometheus UI listen port (default: $PROMETHEUS_PORT)
   -i SCRAPE_INTERVAL    Prometheus scrape interval (default: $SCRAPE_INTERVAL)
   -e EVALUATION_INTERVAL Prometheus evaluation interval (default: $EVALUATION_INTERVAL)
+  -n EXPORTER_NETWORK   Docker network shared with exporter (default: $EXPORTER_NETWORK)
   -?                    Show this help message
 EOF
 }
 
-while getopts ":h:p:u:P:i:e:?" opt; do
+while getopts ":h:p:u:P:i:e:n:?" opt; do
   case "$opt" in
     h) SCRAPE_HOST="$OPTARG" ;;
     p) SCRAPE_PORTS="$OPTARG" ;;
@@ -61,6 +64,7 @@ while getopts ":h:p:u:P:i:e:?" opt; do
     P) PROMETHEUS_PORT="$OPTARG" ;;
     i) SCRAPE_INTERVAL="$OPTARG" ;;
     e) EVALUATION_INTERVAL="$OPTARG" ;;
+    n) EXPORTER_NETWORK="$OPTARG" ;;
     ?) print_usage ; exit 0 ;;
     *) print_usage ; exit 1 ;;
   esac
@@ -85,6 +89,12 @@ check_command docker
 
 if ! docker compose version >/dev/null 2>&1; then
   echo "ERROR: Docker Compose support is not available. Ensure Docker with Compose v2 is installed." >&2
+  exit 1
+fi
+
+if ! docker network inspect "$EXPORTER_NETWORK" >/dev/null 2>&1; then
+  echo "ERROR: Exporter Docker network '$EXPORTER_NETWORK' does not exist." >&2
+  echo "Start the MQ/exporter stack first or select its network with -n." >&2
   exit 1
 fi
 
@@ -154,11 +164,17 @@ services:
     container_name: $CONTAINER_NAME
     ports:
       - "127.0.0.1:$PROMETHEUS_PORT:9090"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./prometheus-data:/prometheus
+    networks:
+      - default
+      - exporter
     restart: unless-stopped
+
+networks:
+  exporter:
+    external: true
+    name: $EXPORTER_NETWORK
 EOF
 
 echo "Building local Prometheus image..."
@@ -177,5 +193,6 @@ echo ""
 echo "Deployment Summary:"
 echo "Prometheus UI  : http://localhost:$PROMETHEUS_PORT/"
 echo "Scrape targets : $SCRAPE_HOST:${SCRAPE_PORTS//,/ , $SCRAPE_HOST:}$SCRAPE_PATH"
+echo "Exporter network: $EXPORTER_NETWORK"
 echo "Image name     : $IMAGE_NAME"
 echo "Container name : $CONTAINER_NAME"
