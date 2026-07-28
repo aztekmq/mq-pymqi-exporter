@@ -623,6 +623,9 @@ class PyMQICollector:
         self._startup_metadata_probe_completed: set[str] = set()
         self._selector_names = self._build_selector_name_map()
         self._observed_applications: dict[str, set[str]] = {}
+        self._observed_queues: dict[str, set[str]] = {}
+        self._amqsruac_fallback_records: dict[tuple[str, str], list[MetricRecord]] = {}
+        self._amqsruac_fallback_refresh: dict[tuple[str, str], float] = {}
 
     def close(self) -> None:
         with self._session_lock:
@@ -666,8 +669,73 @@ class PyMQICollector:
             records.extend(self._collect_activity_trace_metrics(config, session.qmgr))
             records.extend(self._collect_event_metrics(config, session.qmgr))
         if getattr(config.metrics, "include_system_topic_stream", False):
-            records.extend(self._collect_system_topic_stream_metrics(config, session))
-            records.extend(self._collect_amqsruac_resource_metrics(config))
+            system_topic_records = self._collect_system_topic_stream_metrics(config, session)
+            records.extend(system_topic_records)
+            amqsruac_mode = getattr(config.metrics, "amqsruac_mode", "fallback")
+            if amqsruac_mode == "always":
+                records.extend(self._collect_amqsruac_resource_metrics(config))
+            elif amqsruac_mode == "fallback":
+                required_classes = {"CPU", "DISK", "STATMQI"}
+                if getattr(self, "_observed_queues", {}).get(config.name):
+                    required_classes.add("STATQ")
+                if getattr(self, "_observed_applications", {}).get(config.name):
+                    required_classes.add("STATAPP")
+                published_classes = {
+                    record.labels.get("monitor_class", "").upper()
+                    for record in system_topic_records
+                    if record.labels.get("monitor_class")
+                }
+                missing_classes = required_classes - published_classes
+                if missing_classes:
+                    LOG.info(
+                        "Using amqsruac fallback for %s classes missing from the direct system-topic cache: %s",
+                        config.name,
+                        ", ".join(sorted(missing_classes)),
+                    )
+                    records.extend(self._collect_cached_amqsruac_fallback(config, missing_classes))
+        return records
+
+    def _collect_cached_amqsruac_fallback(
+        self,
+        config: QueueManagerConfig,
+        monitor_classes: set[str],
+    ) -> list[MetricRecord]:
+        records_cache = getattr(self, "_amqsruac_fallback_records", None)
+        refresh_cache = getattr(self, "_amqsruac_fallback_refresh", None)
+        if records_cache is None or refresh_cache is None:
+            records_cache = self._amqsruac_fallback_records = {}
+            refresh_cache = self._amqsruac_fallback_refresh = {}
+
+        now = time.monotonic()
+        refresh_interval = max(
+            1.0,
+            float(getattr(config.metrics, "amqsruac_fallback_interval_seconds", 300.0)),
+        )
+        due_classes = {
+            monitor_class
+            for monitor_class in monitor_classes
+            if now - refresh_cache.get((config.name, monitor_class), float("-inf")) >= refresh_interval
+        }
+        if due_classes:
+            LOG.info(
+                "Refreshing cached amqsruac fallback for %s classes: %s",
+                config.name,
+                ", ".join(sorted(due_classes)),
+            )
+            refreshed = self._collect_amqsruac_resource_metrics(
+                config,
+                monitor_classes=due_classes,
+            )
+            for monitor_class in due_classes:
+                prefix = f"ibmmq_{monitor_class.lower()}_"
+                records_cache[(config.name, monitor_class)] = [
+                    record for record in refreshed if record.name.startswith(prefix)
+                ]
+                refresh_cache[(config.name, monitor_class)] = now
+
+        records: list[MetricRecord] = []
+        for monitor_class in sorted(monitor_classes):
+            records.extend(records_cache.get((config.name, monitor_class), ()))
         return records
 
     def _collect_event_metrics(self, config: QueueManagerConfig, qmgr) -> list[MetricRecord]:
@@ -687,7 +755,12 @@ class PyMQICollector:
                 LOG.warning("Skipping unavailable administrative event queue %s on %s: %s", queue_name, config.name, exc)
         return records
 
-    def _collect_amqsruac_resource_metrics(self, config: QueueManagerConfig) -> list[MetricRecord]:
+    def _collect_amqsruac_resource_metrics(
+        self,
+        config: QueueManagerConfig,
+        *,
+        monitor_classes: set[str] | None = None,
+    ) -> list[MetricRecord]:
         executable = "/opt/mqm/samp/bin/amqsruac"
         if not os.path.isfile(executable) or not config.connection.channel or not config.connection.conn_name:
             return []
@@ -707,8 +780,22 @@ class PyMQICollector:
             ("STATMQI", "SUBSCRIBE", None),
             ("STATMQI", "PUBLISH", None),
         ]
+        # STATQ requires an exact queue name with -o. Use queue names returned
+        # by the PCF queue inquiries rather than passing wildcard patterns that
+        # amqsruac does not accept.
+        observed_queues = getattr(self, "_observed_queues", {})
+        for queue_name in sorted(observed_queues.get(config.name, set())):
+            jobs.extend(
+                ("STATQ", monitor_type, queue_name)
+                for monitor_type in ("OPENCLOSE", "INQSET", "PUT", "GET", "GENERAL")
+            )
         for application in sorted(self._observed_applications.get(config.name, set())):
             jobs.append(("STATAPP", "INSTANCE", application))
+        if monitor_classes is not None:
+            wanted = {value.upper() for value in monitor_classes}
+            jobs = [job for job in jobs if job[0] in wanted]
+        if not jobs:
+            return []
         env = os.environ.copy()
         env["MQSERVER"] = f"{config.connection.channel}/TCP/{config.connection.conn_name}"
 
@@ -781,7 +868,7 @@ class PyMQICollector:
             return records
 
         records: list[MetricRecord] = []
-        with ThreadPoolExecutor(max_workers=len(jobs), thread_name_prefix="amqsruac") as executor:
+        with ThreadPoolExecutor(max_workers=min(32, len(jobs)), thread_name_prefix="amqsruac") as executor:
             for result in executor.map(collect_one, jobs):
                 records.extend(result)
         return records
@@ -1363,6 +1450,9 @@ class PyMQICollector:
                 queue_name = self._normalize_mq_string(response.get(queue_name_attr, ""))
                 if not queue_name:
                     continue
+                observed_queues = getattr(self, "_observed_queues", None)
+                if observed_queues is not None:
+                    observed_queues.setdefault(config.name, set()).add(queue_name)
                 for attr_name, spec in QUEUE_SPECS.items():
                     attr_id = getattr(self.pymqi.CMQC, attr_name, None)
                     if attr_id is None or attr_id not in response:
@@ -1393,6 +1483,9 @@ class PyMQICollector:
                 queue_name = self._normalize_mq_string(response.get(queue_name_attr, ""))
                 if not queue_name:
                     continue
+                observed_queues = getattr(self, "_observed_queues", None)
+                if observed_queues is not None:
+                    observed_queues.setdefault(config.name, set()).add(queue_name)
                 for attr_name, spec in QUEUE_STATUS_SPECS.items():
                     attr_id = getattr(self.pymqi.CMQC, attr_name, None)
                     if attr_id is None:

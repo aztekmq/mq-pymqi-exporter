@@ -1,146 +1,139 @@
-# MQ Prometheus Exporter for Python and pyMQI
+# mq-pymqi-exporter
 
-Prometheus exporter for IBM MQ, built in Python 3 with `pyMQI`, designed for production-friendly polling behavior instead of scrape-driven remote collection.
+Prometheus exporter for IBM MQ, implemented in Python with pyMQI and the IBM MQ
+client tools. MQ collection runs in the background; HTTP requests read a cached
+Prometheus registry and do not wait for a queue manager.
 
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](#getting-started)
-[![Prometheus](https://img.shields.io/badge/prometheus-exporter-orange.svg)](#metrics-and-endpoints)
-[![IBM MQ](https://img.shields.io/badge/ibm%20mq-pyMQI-green.svg)](#overview)
+The repository also contains a complete local Docker lab: IBM MQ queue managers,
+the exporter, Prometheus, Grafana, dashboards, and Bash helpers for operating
+each component.
 
-## Table of Contents
-- [Overview](#overview)
-- [Why This Exporter](#why-this-exporter)
-- [Key Capabilities](#key-capabilities)
-- [Architecture](#architecture)
-- [Getting Started](#getting-started)
-- [Configuration Model](#configuration-model)
-- [Metrics and Endpoints](#metrics-and-endpoints)
-- [Using docker_build for Local MQ Test Environments](#using-docker_build-for-local-mq-test-environments)
-- [Running the Exporter](#running-the-exporter)
-- [Operational Model](#operational-model)
-- [Project Layout](#project-layout)
-- [Current Scope and Extension Points](#current-scope-and-extension-points)
+## What it collects
 
-## Overview
-This exporter is built for a practical IBM MQ monitoring pattern:
+Metric names use the `ibmmq_` prefix. The exact set exposed at any moment depends
+on the enabled collectors, matching objects, MQ version, generated MQ traffic,
+and whether accounting/statistics intervals have completed.
 
-- background worker threads poll remote queue managers on their own schedule
-- Prometheus scrapes cached metrics only
-- HTTP serving is isolated from MQ collection activity
-- concurrency is bounded, with a configurable ceiling up to `50` worker threads
-- per-queue-manager polling intervals are defined in YAML
+| Area | Source |
+| --- | --- |
+| Exporter health, poll duration, success, and errors | Exporter runtime |
+| Queue-manager configuration and status | pyMQI PCF inquiries |
+| Queue configuration, depth, open handles, ages, rates, and status | pyMQI PCF inquiries and MQ monitoring data |
+| Channel configuration and status | pyMQI PCF inquiries |
+| Topic configuration/status | pyMQI PCF inquiries |
+| Accounting and statistics records | IBM MQ administration queues |
+| Activity trace records | IBM MQ activity queues |
+| Queue-manager, performance, channel, command, configuration, logger, and pub/sub events | IBM MQ event queues |
+| CPU, disk, and log metrics | Client-mode `amqsruac` |
+| STATMQI totals and rates | Client-mode `amqsruac` |
+| STATQ per-queue OPENCLOSE, INQSET, PUT, GET, and GENERAL metrics | Client-mode `amqsruac` |
+| STATAPP metrics for observed applications | Client-mode `amqsruac` |
+| `$SYS/MQ/INFO/QMGR/...` monitoring publications | Dynamic subscription to `SYSTEM.ADMIN.TOPIC` |
 
-That separation matters. A scrape should never be the trigger for remote MQ command execution. In this design, scraping is a read-only operation against an in-memory Prometheus registry.
+`amqsruac` is the client-capable program shipped with IBM MQ. It is intentionally
+used here instead of `amqsrua`, which is a bindings-mode tool.
 
-## Why This Exporter
-Many exporter implementations collapse collection and presentation into the same execution path. That is tolerable for cheap local metrics and a bad fit for remote IBM MQ estates.
-
-This exporter is intended for environments where:
-
-- a single process may monitor many remote queue managers
-- MQ PCF activity must be rate-controlled
-- scrape spikes must not multiply load on MQ
-- failures on one queue manager must not stall the HTTP server
-- the last known good metrics should remain visible during transient poll failures
-
-## Key Capabilities
-- Dedicated HTTP thread for endpoint presentation.
-- Independent background scheduler for queue manager polling.
-- Bounded worker pool with `max_threads` capped at `50`.
-- YAML-driven global and per-queue-manager configuration.
-- Stable cached metrics between scrapes.
-- Exporter health metrics such as target up/down, poll duration, next poll time, and poll error totals.
-- Additional `/info` and `/status` endpoints for operational visibility.
+Administration/event queue collectors consume messages. If another application
+also drains those queues, records are divided between consumers rather than
+duplicated.
 
 ## Architecture
-```mermaid
-flowchart LR
-    P[Prometheus] -->|GET /metrics| H[HTTP Server Thread]
-    U[Operator] -->|GET /info| H
-    U2[Operator] -->|GET /status| H
 
-    H --> R[(Prometheus Registry Cache)]
-
-    S[Scheduler Thread] -->|dispatch due jobs| W[Worker Pool<br/>1..50 threads]
-    W -->|pyMQI / PCF polling| MQ1[IBM MQ Queue Manager A]
-    W -->|pyMQI / PCF polling| MQ2[IBM MQ Queue Manager B]
-    W -->|pyMQI / PCF polling| MQN[IBM MQ Queue Manager N]
-
-    W -->|update metrics| R
-    W -->|update runtime snapshots| T[Runtime State]
-    S -->|next run, running state| T
-    H -->|serve JSON state| T
+```text
+IBM MQ
+  ├─ PCF command/reply ───────────────┐
+  ├─ admin and event queues ─────────┤
+  ├─ SYSTEM.ADMIN.TOPIC ─────────────┤
+  └─ amqsruac client connection ─────┤
+                                     v
+                            background collector
+                                     |
+                              cached registry
+                                     |
+                  /metrics   /status   /info   /
 ```
 
-### Control Plane Summary
-- The scheduler decides when each queue manager is polled.
-- The worker pool performs remote MQ collection.
-- The registry cache stores the most recent metric values.
-- The HTTP thread serves the cached registry and runtime metadata.
+Each enabled queue manager has its own polling interval. A bounded worker pool
+collects concurrently, while the HTTP server remains responsive. Failed polls
+leave the last successful MQ samples in the cache and update exporter health and
+status information.
 
-### Request Flow Summary
-- `GET /metrics` does not talk to MQ.
-- `GET /info` does not talk to MQ.
-- `GET /status` does not talk to MQ.
+## Requirements
 
-## Getting Started
+For the Docker lab:
 
-### 1. Prerequisites
-- Python `3.10+`
-- IBM MQ client libraries installed and usable by `pyMQI`
-- A reachable IBM MQ queue manager
-- Prometheus-compatible environment
+- Linux or WSL with Bash
+- Docker Engine with Compose v2 and BuildKit
+- `ss` from `iproute2` for port checks
+- `sudo` for the MQ data-directory ownership operations
+- The IBM MQ redistributable client/SDK at
+  `docker_build/ibm_mq_redist_packages/10.0.0.0-IBM-MQC-Redist-LinuxX64`
 
-### 2. Install Dependencies
-```powershell
-python -m pip install -r requirements.txt
+For a source installation:
+
+- Python 3.10 or newer
+- IBM MQ client libraries and headers compatible with pyMQI
+- `amqsruac` when CPU, disk, log, STATMQI, or STATAPP data is required
+
+## Quick start: complete Docker lab
+
+Run the stack helpers from `docker_build`; the MQ, Prometheus, and Grafana start
+scripts create files relative to the current directory.
+
+```bash
+cd docker_build
+
+# Build and start one queue manager.
+./start_mq.sh 1
+
+# Build and start the exporter on the MQ Compose network.
+./start_pymqi_exporter.sh
+
+# Optional monitoring UI stack.
+./start_prometheus.sh
+./start_grafana.sh
 ```
 
-If you are working from source without packaging the module:
-```powershell
-$env:PYTHONPATH = "src"
-```
+Open:
 
-### 3. Create or Copy the Example Configuration
-Top-level exporter config:
-- [examples/exporter.yaml](examples/exporter.yaml)
+- Exporter metrics: <http://localhost:9157/metrics>
+- Exporter status: <http://localhost:9157/status>
+- Prometheus: <http://localhost:9091/>
+- Grafana: <http://localhost:3000/> (`admin` / `admin` by default)
+- QM1 web console: <https://localhost:9444/>
 
-Per-queue-manager example:
-- [examples/qmgrs/local-qm1.yaml](examples/qmgrs/local-qm1.yaml)
+> **Data-loss warning:** every invocation of `start_mq.sh` brings down the
+> existing MQ Compose stack and deletes `docker_build/data` before recreating
+> it. Do not use that helper to restart queue managers whose data must survive.
 
-Use them as a template:
-```powershell
-Copy-Item examples\exporter.yaml .\exporter.yaml
-New-Item -ItemType Directory .\qmgrs
-Copy-Item examples\qmgrs\local-qm1.yaml .\qmgrs\qm1.yaml
-```
+### Docker networking
 
-### 4. Set MQ Secrets
-The recommended pattern is environment variables referenced by the qmgr YAML:
-```powershell
-$env:MQ_QM1_PASSWORD = "passw0rd"
-```
+The address depends on where the MQ client runs:
 
-### 5. Start the Exporter
-```powershell
-python -m mq_exporter.main --config .\exporter.yaml
-```
+| Client location | QM1 connection name |
+| --- | --- |
+| Exporter container on `docker_build_default` | `qm1(1414)` |
+| Process running directly on the host | `localhost(1415)` |
 
-### 6. Validate Endpoints
-```powershell
-curl http://localhost:9157/
-curl http://localhost:9157/info
-curl http://localhost:9157/status
-curl http://localhost:9157/metrics
-```
+Containers must use the MQ container/service name and its internal port. Inside
+the exporter container, `localhost` means the exporter itself—not QM1.
 
-## Configuration Model
-The configuration is intentionally split into two layers:
+For queue manager `N`, `start_mq.sh` creates container `qmN` and maps these host
+ports:
 
-- one top-level exporter YAML for server and scheduler settings
-- one YAML file per queue manager for connection and polling behavior
+- MQ listener: `1414 + N`
+- Web console: `9443 + N`
+- REST administration: `9449 + N`
 
-### Top-Level Exporter Config
-Example:
+The included QM1 example therefore correctly uses `qm1(1414)` because the
+exporter runs in a separate container on the same network.
+
+## Configuration
+
+The top-level file is [examples/exporter.yaml](examples/exporter.yaml). It
+defines the HTTP server, scheduler, defaults, and directory containing one YAML
+file per queue manager.
+
 ```yaml
 server:
   host: 0.0.0.0
@@ -159,313 +152,383 @@ default_timeout: 20s
 qmgr_directory: qmgrs
 ```
 
-### Top-Level Settings
-- `server.host`: bind address for the HTTP server
-- `server.port`: listening port
-- `server.metrics_path`: Prometheus scrape path
-- `worker_pool.max_threads`: maximum concurrent poll threads, capped in code at `50`
-- `worker_pool.scheduler_tick_seconds`: scheduler wake-up interval
-- `logging.level`: Python log level
-- `default_poll_interval`: fallback polling interval for qmgr configs
-- `default_timeout`: fallback timeout for qmgr configs
-- `qmgr_directory`: directory holding qmgr-specific YAML files
+Durations support `ms`, `s`, `m`, and `h`. Worker threads are hard-capped at 50.
 
-### Per-Queue-Manager Config
-Example:
+The included [QM1 configuration](examples/qmgrs/local-qm1.yaml) enables the
+available collector families:
+
 ```yaml
 name: QM1
 enabled: true
-poll_interval: 15s
+poll_interval: 60s
 timeout: 10s
 
 connection:
   queue_manager: QM1
   channel: DEV.APP.SVRCONN
-  conn_name: localhost(1415)
+  conn_name: qm1(1414)
   user: app
   password_env: MQ_QM1_PASSWORD
 
 metrics:
   include_queue_manager: true
   include_queues: true
+  include_topics: true
   include_channels: true
+  include_accounting: true
+  include_statistics: true
+  include_activity_trace: true
+  include_system_topic_stream: true
+
   queue_patterns:
     - APP.*
     - SYSTEM.ADMIN.COMMAND.QUEUE
+  topic_patterns:
+    - SYSTEM.ADMIN.TOPIC
   channel_patterns:
     - DEV.*
+
+  system_topic_subscription_patterns:
+    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATMQI/#
+    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATQ/#
+    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/STATAPP/#
+    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/CPU/#
+    - $SYS/MQ/INFO/QMGR/{qmgr}/Monitor/DISK/#
+  system_topic_max_messages_per_poll: 50000
+  system_topic_diagnostics: true
+  system_topic_startup_probe_window_seconds: 15
+  system_topic_startup_probe_interval_seconds: 5
+  amqsruac_mode: fallback
+  amqsruac_fallback_interval_seconds: 300
 ```
 
-### Per-Queue-Manager Settings
-- `name`: logical exporter name for this target
-- `enabled`: whether this qmgr should be scheduled
-- `poll_interval`: background polling cadence
-- `timeout`: target poll timeout
+Passwords may be supplied with exactly the approach appropriate to the
+environment:
 
-`connection` block:
-- `queue_manager`: MQ queue manager name
-- `channel`: MQ client channel
-- `conn_name`: MQ connection endpoint such as `host(port)`
-- `user`: MQ user ID
-- `password`: inline password
-- `password_env`: environment variable name containing the password
+- `password_env`: name of an environment variable; recommended for containers
 - `password_file`: path to a file containing the password
+- `password`: inline value; convenient but not recommended
 
-`metrics` block:
-- `include_queue_manager`: collect qmgr-level metrics
-- `include_queues`: collect queue metrics
-- `include_channels`: collect channel metrics
-- `queue_patterns`: queue selection patterns
-- `channel_patterns`: channel selection patterns
+The Docker helper exports `MQ_QM1_PASSWORD`, defaulting to the lab password
+`passw0rd`. Change all included development credentials outside an isolated lab.
 
-### Duration Format
-Supported duration values are:
-- `500ms`
-- `15s`
-- `2m`
-- `1h`
+### Pattern behavior
 
-## Metrics and Endpoints
+Queue, topic, and channel patterns are sent through the relevant PCF inquiries.
+Broad patterns increase collection time and cardinality. A queue such as
+`APP.LOCAL` is not collected unless it matches at least one configured queue
+pattern.
 
-### `/metrics`
-Prometheus scrape endpoint.
+System-topic `{qmgr}` placeholders are replaced with the configured queue
+manager name. Monitoring publications are interval- and activity-driven, so
+enabling a subscription does not guarantee immediate samples for every family.
 
-Important behavior:
-- no MQ polling occurs in request scope
-- returns cached metrics from the in-memory registry
-- remains available even if one or more qmgr polls fail
+`amqsruac_mode` controls the sample-client fallback:
 
-### `/info`
-Static and semi-static exporter information in JSON:
-- resolved config path
-- server settings
-- worker pool settings
-- logging level
-- registered qmgr targets and their configured poll intervals
+- `fallback` (recommended): use persistent pyMQI topic subscriptions and their
+  latest-value cache; invoke `amqsruac` only for classes not yet represented in
+  that cache. Fallback results are cached by class and refreshed no more often
+  than `amqsruac_fallback_interval_seconds` (300 seconds by default)
+- `always`: run `amqsruac` every poll for validation or troubleshooting
+- `disabled`: never invoke `amqsruac`
 
-Example fields:
-```json
-{
-  "config_path": "C:/path/exporter.yaml",
-  "server": {
-    "host": "0.0.0.0",
-    "metrics_path": "/metrics",
-    "port": 9157
-  },
-  "worker_pool": {
-    "max_threads": 50,
-    "scheduler_tick_seconds": 1.0
-  }
-}
+The direct subscriptions are opened once and retained with the MQ session.
+Every publication is parsed once and its newest labeled values remain cached
+across later polls. A broken MQ session is reconnected and its subscriptions
+are recreated automatically.
+
+### IBM MQ prerequisites
+
+The custom image applies
+[monitoring-auth.mqsc](docker_build/mq-monitoring/monitoring-auth.mqsc), which
+enables the lab's accounting, statistics, monitoring, activity, and event
+settings and grants its monitoring identities access to required objects.
+
+For an independently managed queue manager, configure the corresponding MQ
+attributes and authorities. At minimum, PCF collection needs access to:
+
+- `SYSTEM.ADMIN.COMMAND.QUEUE`
+- `SYSTEM.DEFAULT.MODEL.QUEUE`
+
+Optional collectors also require their configured accounting, statistics,
+activity, event, and topic objects. Missing authority normally appears as MQRC
+2035; an unreachable host/port normally appears as MQRC 2538.
+
+## HTTP endpoints
+
+| Path | Purpose |
+| --- | --- |
+| `/metrics` | Cached Prometheus exposition |
+| `/status` | Per-queue-manager poll state and last error |
+| `/info` | Process, configuration, and runtime information |
+| `/` | Endpoint index |
+
+The Prometheus scrape interval controls how often Prometheus reads the cache.
+It does not control the MQ polling interval.
+
+## Inspect the metric surface
+
+The repository includes a helper that prints sorted, unique metric names,
+ignoring comments and labels, followed by the count:
+
+```bash
+./scripts/count_unique_metrics.sh
+./scripts/count_unique_metrics.sh http://localhost:9157/metrics
 ```
 
-### `/status`
-Live operational state in JSON:
-- exporter uptime
-- per-qmgr running state
-- last attempt time
-- last success time
-- last completion time
-- next scheduled poll
-- last poll duration
-- last metric count
-- success and failure totals
-- last error summary
+Do not treat the count as a fixed product constant. It changes with configuration,
+MQ object inventory, activity, completed statistics intervals, and collector
+availability.
 
-This is the endpoint you use when you need to know whether the collector is healthy without reading raw Prometheus samples.
+Useful diagnostics:
 
-### `/`
-Simple landing page with links to:
-- `/metrics`
-- `/info`
-- `/status`
+```bash
+curl -fsS http://localhost:9157/status
+curl -fsS http://localhost:9157/info
+docker logs --tail 200 mq-pymqi-exporter
+docker exec mq-pymqi-exporter sh -lc 'command -v amqsruac'
+docker exec mq-pymqi-exporter sh -lc 'printf "%s\n" "$MQSERVER"'
+```
 
-## Using `docker_build` for Local MQ Test Environments
-The repository includes a `docker_build/` helper area for spinning up IBM MQ queue managers locally so you can test the exporter without needing an external estate.
+## Bash helper reference
 
-Relevant files:
-- [docker_build/build_mq.ps1](docker_build/build_mq.ps1)
-- [docker_build/build_mq.bat](docker_build/build_mq.bat)
-- [docker_build/build_mq.sh](docker_build/build_mq.sh)
-- [docker_build/build_mq.md](docker_build/build_mq.md)
-- [docker_build/docker-compose.yml](docker_build/docker-compose.yml)
-- [docker_build/mq-monitoring/Dockerfile](docker_build/mq-monitoring/Dockerfile)
-- [docker_build/mq-monitoring/monitoring-auth.mqsc](docker_build/mq-monitoring/monitoring-auth.mqsc)
+The following are the project-owned Bash helpers. Shell files shipped inside the
+IBM redistributable package and generated build contexts are vendor/generated
+implementation files, not operator commands.
 
-### Windows Quick Start
-Create one or more queue managers:
-```powershell
+| Script | Purpose | Default effect |
+| --- | --- | --- |
+| `docker_build/start_mq.sh` | Build and provision N local MQ queue managers | Recreates the stack **and deletes existing MQ data** |
+| `docker_build/stop_mq.sh` | Stop the MQ Compose stack | Preserves data, image, Compose file, and network |
+| `docker_build/start_pymqi_exporter.sh` | Build and run the exporter image | Replaces the named exporter container |
+| `docker_build/stop_pymqi_exporter.sh` | Stop/remove exporter container | Preserves images and generated build files |
+| `docker_build/start_prometheus.sh` | Generate config, build, and run Prometheus | Scrapes ports 9157–9159; UI on 9091 |
+| `docker_build/stop_prometheus.sh` | Stop/remove Prometheus | Preserves image, time-series data, and generated config |
+| `docker_build/start_grafana.sh` | Provision and run Grafana | UI on 3000; provisions Prometheus and dashboards |
+| `docker_build/stop_grafana.sh` | Stop/remove Grafana | Preserves local data and shared network |
+| `docker_build/docker_tool.sh` | Interactive Docker container utility | Read/operate on a selected container |
+| `scripts/count_unique_metrics.sh` | List and count unique Prometheus names | Reads `http://localhost:9157/metrics` |
+
+### MQ helpers
+
+```bash
 cd docker_build
-.\build_mq.ps1 1
+./start_mq.sh <number-of-queue-managers>
+./stop_mq.sh [-d] [-i] [-c] [-n] [-a]
 ```
 
-Or:
-```bat
+`start_mq.sh` validates ports, builds `mq-local-monitoring`, removes the old
+Compose stack and data, creates `data/QM*`, generates `docker-compose.yml`, and
+starts the queue managers.
+
+`stop_mq.sh` flags:
+
+- `-d`: permanently delete MQ data
+- `-i`: remove `mq-local-monitoring`
+- `-c`: remove the generated Compose file
+- `-n`: remove unused Compose networks
+- `-a`: perform all cleanup actions
+
+### Exporter helpers
+
+```bash
 cd docker_build
-build_mq.bat 1
+./start_pymqi_exporter.sh
+./stop_pymqi_exporter.sh
 ```
 
-### What the Helper Does
-- checks local port availability
-- builds a local MQ image that creates OS group `monitoring` and user `app`
-- loads MQ startup authority records for monitoring subscriptions and event queues
-- recreates local MQ data directories
-- generates a Docker Compose stack
-- starts IBM MQ containers
-- maps host listener, web, and REST ports per qmgr
+The start helper creates a clean build context, builds pyMQI and the exporter
+inside Docker with Python 3.11.9, mounts `examples` read-only, publishes port
+9157, and joins `docker_build_default`.
 
-### Example Test Flow
-1. Start MQ locally with `docker_build`.
-2. Confirm the MQ container is healthy.
-3. Point `examples/qmgrs/local-qm1.yaml` at the generated listener port.
-4. Set the corresponding password environment variable.
-5. Start the exporter.
-6. Open `/status` and verify background polls are succeeding.
-7. Add the exporter to Prometheus and scrape `/metrics`.
+Supported start environment overrides:
 
-### Example Local Connection
-If `docker_build` creates `QM1` on port `1415`, your qmgr config might use:
-```yaml
-connection:
-  queue_manager: QM1
-  channel: DEV.APP.SVRCONN
-  conn_name: localhost(1415)
-  user: app
-  password_env: MQ_QM1_PASSWORD
+```text
+BASE_IMAGE           mq-local-monitoring:latest
+EXPORTER_IMAGE       mq-pymqi-exporter:latest
+CONTAINER_NAME       mq-pymqi-exporter
+EXPORTER_PORT        9157
+PYTHON_VERSION       3.11.9
+MQ_QM1_PASSWORD      passw0rd
+DOCKER_NETWORK       docker_build_default
+REBUILD_BASE         false
+NO_CACHE             false
 ```
 
-The generated queue managers enable `ACCTQ(ON)` and `STATQ(ON)`, and grant the `monitoring` group `GET` authority on:
-- `SYSTEM.ADMIN.ACCOUNTING.QUEUE`
-- `SYSTEM.ADMIN.STATISTICS.QUEUE`
-- `SYSTEM.ADMIN.QMGR.EVENT`
-- `SYSTEM.ADMIN.PERF.EVENT`
+Examples:
 
-Because the exporter in this repo uses PCF commands, the startup config also grants `PUT` on `SYSTEM.ADMIN.COMMAND.QUEUE` and `PUT` plus `GET` on `SYSTEM.DEFAULT.MODEL.QUEUE` so the `app` principal can send admin inquiries and receive replies.
-
-They also grant `SUB` and `RESUME` on `SYSTEM.ADMIN.TOPIC`. For queue consumption, `GET` is the consume permission; `BROWSE` would be non-destructive read only.
-
-## Running the Exporter
-
-### Development Mode
-```powershell
-$env:PYTHONPATH = "src"
-python -m mq_exporter.main --config .\exporter.yaml
+```bash
+NO_CACHE=true ./start_pymqi_exporter.sh
+REBUILD_BASE=true ./start_pymqi_exporter.sh
+EXPORTER_PORT=9158 CONTAINER_NAME=mq-exporter-2 ./start_pymqi_exporter.sh
 ```
 
-### Prometheus Example
-```yaml
-scrape_configs:
-  - job_name: ibmmq-python
-    scrape_interval: 15s
-    static_configs:
-      - targets:
-          - localhost:9157
+The stop helper recognizes `CONTAINER_NAME`, `EXPORTER_IMAGE`, `BASE_IMAGE`,
+`DOCKER_NETWORK`, plus these Boolean cleanup switches:
+
+```bash
+REMOVE_EXPORTER_IMAGE=true REMOVE_GENERATED_FILES=true \
+  ./stop_pymqi_exporter.sh
 ```
 
-The scrape interval does not control MQ polling frequency. It only controls how often Prometheus reads the exporter's cached registry.
+`REMOVE_BASE_IMAGE=true` removes the custom MQ base image;
+`REMOVE_NETWORK=true` removes the network only when possible.
 
-## Operational Model
+### Prometheus helpers
 
-### Background Polling
-Each queue manager has its own polling cadence. When a target becomes due:
-- the scheduler submits a job to the worker pool
-- the worker performs pyMQI collection
-- the metrics cache is updated
-- runtime state is updated
+```bash
+cd docker_build
+./start_prometheus.sh \
+  [-h scrape-host] [-p comma-separated-ports] [-u path] \
+  [-P ui-port] [-i scrape-interval] [-e evaluation-interval] \
+  [-n exporter-network]
 
-### Failure Handling
-On poll failure:
-- cached last-good metrics remain intact
-- exporter health metrics are updated
-- `/status` records the failure
-- the target remains scheduled for future retries
-
-### Concurrency Guardrails
-- the scheduler is a single lightweight coordination thread
-- HTTP serving runs in its own thread
-- MQ polling is bounded by `worker_pool.max_threads`
-- the exporter hard-caps worker threads at `50`
-
-## Project Layout
-- [src/mq_exporter/main.py](src/mq_exporter/main.py): process startup and signal handling
-- [src/mq_exporter/config.py](src/mq_exporter/config.py): YAML loading and validation
-- [src/mq_exporter/scheduler.py](src/mq_exporter/scheduler.py): scheduler and worker pool
-- [src/mq_exporter/http_server.py](src/mq_exporter/http_server.py): HTTP endpoints
-- [src/mq_exporter/metrics.py](src/mq_exporter/metrics.py): cached Prometheus registry
-- [src/mq_exporter/runtime_state.py](src/mq_exporter/runtime_state.py): runtime info and status snapshots
-- [src/mq_exporter/mq.py](src/mq_exporter/mq.py): pyMQI collection adapter
-- [examples/exporter.yaml](examples/exporter.yaml): top-level exporter settings
-- [examples/qmgrs/local-qm1.yaml](examples/qmgrs/local-qm1.yaml): sample per-qmgr configuration
-
-## Current Scope and Extension Points
-The current implementation provides the architecture and operational model you asked for, with initial metric coverage for:
-- queue manager metrics
-- queue metrics
-- optional channel metrics
-
-The obvious next extension is broader parity with the Go exporter:
-- more PCF mappings
-- richer object coverage
-- better classification of MQ errors in `/status`
-- optional authentication on operational endpoints
-- container packaging for the exporter itself
-
-This repo is now structured so those additions do not require changing the fundamental "background polling plus cached serving" model.
-
-```shell
-(.venv) C:\Users\User\Documents\githubdev\mq-pymqi-exporter\docker_build>build_mq.bat
-
-cmdlet build_mq.ps1 at command pipeline position 1
-Supply values for the following parameters:
-NumberOfQmgrs: 1
-Checking for port conflicts...
-No port conflicts detected.
-Checking Docker availability...
-Building custom MQ image with monitoring user and authorities...
-[+] Building 0.8s (8/8) FINISHED                              docker:desktop-linux
- => [internal] load build definition from Dockerfile                          0.0s
- => => transferring dockerfile: 246B                                          0.0s
- => [internal] load metadata for docker.io/ibmcom/mq:latest                   0.0s
- => [internal] load .dockerignore                                             0.0s
- => => transferring context: 2B                                               0.0s
- => [1/3] FROM docker.io/ibmcom/mq:latest@sha256:7590ea14750ecba7bd24b758dc9  0.1s
- => => resolve docker.io/ibmcom/mq:latest@sha256:7590ea14750ecba7bd24b758dc9  0.1s
- => [internal] load build context                                             0.0s
- => => transferring context: 42B                                              0.0s
- => CACHED [2/3] RUN groupadd --system monitoring     && useradd --system --  0.0s
- => CACHED [3/3] COPY monitoring-auth.mqsc /etc/mqm/monitoring-auth.mqsc      0.0s
- => exporting to image                                                        0.3s
- => => exporting layers                                                       0.0s
- => => exporting manifest sha256:838305b44cc2930fd093d6aa0f088cab0b6678b693b  0.0s
- => => exporting config sha256:a440af89c4fac8973c90425ddd045646ae46d797165b4  0.0s
- => => exporting attestation manifest sha256:37cc252e40486442349ecfca0cc4a37  0.0s
- => => exporting manifest list sha256:77a6300c155b1a5963561a6232b20ca0739ba9  0.0s
- => => naming to docker.io/library/mq-local-monitoring:latest                 0.0s
- => => unpacking to docker.io/library/mq-local-monitoring:latest              0.1s
-
-View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/u0j5tyoabpbggiv2hchjhxgng
-
-What's next:
-    View a summary of image vulnerabilities and recommendations → docker scout quickview 
-Cleaning up old containers and volumes...
-time="2026-05-03T15:56:15-05:00" level=warning msg="C:\\Users\\User\\Documents\\githubdev\\mq-pymqi-exporter\\docker_build\\docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
-Creating data directories...
-Generating docker-compose.yml...
-Starting up 1 IBM MQ containers...
-time="2026-05-03T15:56:16-05:00" level=warning msg="C:\\Users\\User\\Documents\\githubdev\\mq-pymqi-exporter\\docker_build\\docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
-[+] Running 2/2
- ✔ Network docker_build_default  Created                                      0.1s 
- ✔ Container qm1                 Started                                      0.7s 
-All containers started successfully.
-
-Deployment Summary:
-
-QMGR ContainerName ListenerPort WebPort RestPort
----- ------------- ------------ ------- --------
-QM1  qm1                   1415    9444     9450
-
-
-
-To connect to a container:
-docker exec -it <container_name> bash
+./stop_prometheus.sh [-i] [-d] [-c] [-a]
 ```
+
+Start defaults are exporter container `mq-pymqi-exporter`, port `9157`, path
+`/metrics`, UI port `9091`, exporter network `docker_build_default`, and
+15-second scrape/evaluation intervals. Prometheus joins both its own Compose
+network (for Grafana) and the exporter's network, so it scrapes
+`mq-pymqi-exporter:9157` without traversing a host-published port. It generates
+`prometheus/prometheus.yml`, a Dockerfile,
+`docker-compose.prometheus.yml`, and persistent `prometheus-data`.
+
+Stop flags remove the image (`-i`), time-series data (`-d`), generated files
+(`-c`), or everything (`-a`). Data removal is permanent.
+
+### Grafana helpers
+
+```bash
+cd docker_build
+./start_grafana.sh \
+  [-P ui-port] [-u prometheus-url] [-n network] \
+  [-U admin-user] [-W admin-password]
+
+./stop_grafana.sh [-r] [-d] [-n]
+```
+
+Start defaults are port 3000, Prometheus URL
+`http://prometheus-local-monitoring:9090`, Docker network
+`prometheus_local_monitoring_default`, and credentials `admin` / `admin`.
+Dashboard JSON files from `dashboards` are copied and provisioned automatically.
+Port `9090` is Prometheus's container port and is correct for Grafana;
+`localhost:9091` is the corresponding host/browser address.
+
+Set the Grafana password persistently in the helper's
+`GRAFANA_ADMIN_PASSWORD` default, for one invocation through the environment,
+or with `-W`:
+
+```bash
+GRAFANA_ADMIN_PASSWORD='choose-a-strong-password' ./start_grafana.sh
+./start_grafana.sh -U admin -W 'choose-a-strong-password'
+```
+
+Stop flags remove the generated Compose file (`-r`), local Grafana data and
+provisioning (`-d`), and the shared network when unused (`-n`).
+
+### Interactive Docker utility
+
+```bash
+./docker_build/docker_tool.sh
+DEFAULT_LOG_LINES=500 ./docker_build/docker_tool.sh
+```
+
+The menu can select a container, show/follow logs, open a shell, inspect stats,
+processes, ports, environment and health, execute a command, copy files, restart,
+stop, or remove the selected container.
+
+## Run from source
+
+Install into a virtual environment only after the IBM MQ client SDK is available
+to the pyMQI build/runtime:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+
+export MQ_QM1_PASSWORD='replace-me'
+python -m mq_exporter.main --config examples/exporter.yaml
+```
+
+When running on the host, change QM1's `conn_name` from `qm1(1414)` to
+`localhost(1415)`.
+
+## Request/reply diagnostic utility
+
+`src/mq_requestreply` contains a small client that puts one message and then
+drains available messages from the same queue:
+
+```bash
+python -m mq_requestreply.mq_requestreply \
+  --queue-manager QM1 \
+  --channel DEV.APP.SVRCONN \
+  --conn-name 'localhost(1415)' \
+  --user app \
+  --password passw0rd \
+  --queue APP.LOCAL \
+  --message 'hello'
+```
+
+Most arguments also have `MQ_*` environment-variable equivalents; run with
+`--help` for the complete list.
+
+## Troubleshooting incomplete metrics
+
+If only a handful of exporter metrics appear:
+
+1. Read `/status` and exporter logs before relying on the raw count.
+2. Confirm the exporter uses `qm1(1414)`, not `localhost(1415)`, in Docker.
+3. Confirm the exporter and `qm1` are attached to `docker_build_default`.
+4. Verify `amqsruac` exists in the exporter image and its client connection is
+   valid.
+5. Generate MQI and queue traffic, then wait for an accounting/statistics
+   interval.
+6. Confirm queue/channel patterns match the intended objects.
+7. Check MQ authorities and whether another consumer is draining admin queues.
+8. Enable `system_topic_diagnostics` and inspect startup-probe log messages.
+
+CPU, disk, log, STATMQI, and STATAPP are not ordinary PCF object attributes.
+Their absence while PCF queue metrics work usually points to the `amqsruac` or
+monitoring-publication path, not basic MQ connectivity.
+
+## Tests
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
+
+Tests cover configuration, startup/shutdown, metric storage, MQ parsing and
+collection, and the request/reply utility.
+
+## Repository layout
+
+```text
+.
+├── dashboards/                 Grafana dashboards
+├── docker_build/               Dockerfiles, MQSC, and stack helpers
+├── examples/                   Exporter and per-QM configuration
+├── scripts/                    Small user-facing utilities
+├── src/mq_exporter/            Exporter implementation
+├── src/mq_requestreply/        MQ request/reply diagnostic client
+├── tests/                      Unit tests
+├── amqsrua.py                  amqsrua-related reference/validation work
+├── amqsrua_validation.md       Collector validation notes
+├── pyproject.toml              Python package metadata
+└── requirements.txt            Runtime dependencies
+```
+
+Generated Docker Compose files, monitoring data, build contexts, Python caches,
+and local-only helpers such as `push_it.sh` are intentionally not part of the
+documented source surface.
+
+## Security and production use
+
+The Docker stack is a development lab. It uses known passwords, publishes
+unencrypted client channels, and defaults Grafana to `admin` / `admin`. Before
+production use, rotate credentials, use secret files or a secret manager, enable
+TLS, restrict MQ and HTTP network access, grant least privilege, pin container
+image versions, and review the consequences of draining shared administration
+queues.

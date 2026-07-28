@@ -76,6 +76,8 @@ class MetricsConfig:
     system_topic_diagnostics: bool = False
     system_topic_startup_probe_window_seconds: float = 15.0
     system_topic_startup_probe_interval_seconds: float = 5.0
+    amqsruac_mode: str = "fallback"
+    amqsruac_fallback_interval_seconds: float = 300.0
 
 
 @dataclass(frozen=True)
@@ -196,7 +198,20 @@ def load_exporter_config(path: str | Path) -> ExporterConfig:
             system_topic_diagnostics=bool(metrics_raw.get("system_topic_diagnostics", False)),
             system_topic_startup_probe_window_seconds=float(metrics_raw.get("system_topic_startup_probe_window_seconds", 15.0)),
             system_topic_startup_probe_interval_seconds=float(metrics_raw.get("system_topic_startup_probe_interval_seconds", 5.0)),
+            amqsruac_mode=str(metrics_raw.get("amqsruac_mode", "fallback")).lower(),
+            amqsruac_fallback_interval_seconds=float(
+                metrics_raw.get("amqsruac_fallback_interval_seconds", 300.0)
+            ),
         )
+        if metrics.amqsruac_mode not in {"fallback", "always", "disabled"}:
+            raise ValueError(
+                f"Unsupported amqsruac_mode {metrics.amqsruac_mode!r} in {file_path}; "
+                "expected fallback, always, or disabled"
+            )
+        if metrics.amqsruac_fallback_interval_seconds < 1:
+            raise ValueError(
+                f"amqsruac_fallback_interval_seconds must be at least 1 in {file_path}"
+            )
         qmgrs.append(
             QueueManagerConfig(
                 name=str(raw["name"]),

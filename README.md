@@ -26,6 +26,7 @@ and whether accounting/statistics intervals have completed.
 | Queue-manager, performance, channel, command, configuration, logger, and pub/sub events | IBM MQ event queues |
 | CPU, disk, and log metrics | Client-mode `amqsruac` |
 | STATMQI totals and rates | Client-mode `amqsruac` |
+| STATQ per-queue OPENCLOSE, INQSET, PUT, GET, and GENERAL metrics | Client-mode `amqsruac` |
 | STATAPP metrics for observed applications | Client-mode `amqsruac` |
 | `$SYS/MQ/INFO/QMGR/...` monitoring publications | Dynamic subscription to `SYSTEM.ADMIN.TOPIC` |
 
@@ -159,7 +160,7 @@ available collector families:
 ```yaml
 name: QM1
 enabled: true
-poll_interval: 15s
+poll_interval: 60s
 timeout: 10s
 
 connection:
@@ -197,6 +198,8 @@ metrics:
   system_topic_diagnostics: true
   system_topic_startup_probe_window_seconds: 15
   system_topic_startup_probe_interval_seconds: 5
+  amqsruac_mode: fallback
+  amqsruac_fallback_interval_seconds: 300
 ```
 
 Passwords may be supplied with exactly the approach appropriate to the
@@ -219,6 +222,20 @@ pattern.
 System-topic `{qmgr}` placeholders are replaced with the configured queue
 manager name. Monitoring publications are interval- and activity-driven, so
 enabling a subscription does not guarantee immediate samples for every family.
+
+`amqsruac_mode` controls the sample-client fallback:
+
+- `fallback` (recommended): use persistent pyMQI topic subscriptions and their
+  latest-value cache; invoke `amqsruac` only for classes not yet represented in
+  that cache. Fallback results are cached by class and refreshed no more often
+  than `amqsruac_fallback_interval_seconds` (300 seconds by default)
+- `always`: run `amqsruac` every poll for validation or troubleshooting
+- `disabled`: never invoke `amqsruac`
+
+The direct subscriptions are opened once and retained with the MQ session.
+Every publication is parsed once and its newest labeled values remain cached
+across later polls. A broken MQ session is reconnected and its subscriptions
+are recreated automatically.
 
 ### IBM MQ prerequisites
 

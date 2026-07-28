@@ -4,6 +4,7 @@ import sys
 import threading
 import types
 import unittest
+from unittest import mock
 
 sys.modules.setdefault(
     "prometheus_client",
@@ -910,6 +911,123 @@ class MQCollectorTests(unittest.TestCase):
         self.assertEqual(
             collector._classify_system_topic_diagnostic_outcome(MQCollectionError("x", reason_code=2598)),
             "unsupported_topic_behavior",
+        )
+
+    def test_amqsruac_fallback_collects_every_advertised_statq_type_for_observed_queues(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector._observed_queues = {"QM1": {"APP.REQUEST"}}
+        collector._observed_applications = {}
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=30.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(
+                queue_manager="QM1",
+                channel="DEV.APP.SVRCONN",
+                conn_name="qm1(1414)",
+            ),
+            metrics=MetricsConfig(include_system_topic_stream=True),
+        )
+        completed = types.SimpleNamespace(stdout="", stderr="")
+
+        with mock.patch("mq_exporter.mq.os.path.isfile", return_value=True), mock.patch(
+            "mq_exporter.mq.subprocess.run", return_value=completed
+        ) as run:
+            collector._collect_amqsruac_resource_metrics(config, monitor_classes={"STATQ"})
+
+        statq_commands = {
+            (call.args[0][call.args[0].index("-t") + 1], call.args[0][call.args[0].index("-o") + 1])
+            for call in run.call_args_list
+            if "STATQ" in call.args[0]
+        }
+        self.assertEqual(
+            statq_commands,
+            {
+                ("OPENCLOSE", "APP.REQUEST"),
+                ("INQSET", "APP.REQUEST"),
+                ("PUT", "APP.REQUEST"),
+                ("GET", "APP.REQUEST"),
+                ("GENERAL", "APP.REQUEST"),
+            },
+        )
+        self.assertTrue(all("STATQ" in call.args[0] for call in run.call_args_list))
+
+    def test_direct_system_topic_cache_prevents_amqsruac_fallback(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector.pymqi = types.SimpleNamespace(PCFExecute=lambda qmgr: object())
+        collector._observed_queues = {"QM1": {"APP.REQUEST"}}
+        collector._observed_applications = {"QM1": {"APP1"}}
+        direct_records = [
+            MetricRecord(
+                name=f"ibmmq_{monitor_class.lower()}_sample",
+                documentation="sample",
+                labels={"qmgr": "QM1", "monitor_class": monitor_class},
+                value=1.0,
+            )
+            for monitor_class in ("CPU", "DISK", "STATMQI", "STATQ", "STATAPP")
+        ]
+        collector._collect_system_topic_stream_metrics = mock.Mock(return_value=direct_records)
+        collector._collect_amqsruac_resource_metrics = mock.Mock(return_value=[])
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=60.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(
+                queue_manager="QM1",
+                channel="DEV.APP.SVRCONN",
+                conn_name="qm1(1414)",
+            ),
+            metrics=MetricsConfig(
+                include_queue_manager=False,
+                include_queues=False,
+                include_system_topic_stream=True,
+                amqsruac_mode="fallback",
+            ),
+        )
+
+        records = collector._collect_with_session(config, types.SimpleNamespace(qmgr=object()))
+
+        self.assertEqual(records, direct_records)
+        collector._collect_amqsruac_resource_metrics.assert_not_called()
+
+    def test_amqsruac_fallback_cache_avoids_refreshing_each_poll(self) -> None:
+        collector = PyMQICollector.__new__(PyMQICollector)
+        collector._amqsruac_fallback_records = {}
+        collector._amqsruac_fallback_refresh = {}
+        fallback_record = MetricRecord(
+            name="ibmmq_cpu_sample",
+            documentation="sample",
+            labels={"qmgr": "QM1"},
+            value=1.0,
+        )
+        collector._collect_amqsruac_resource_metrics = mock.Mock(return_value=[fallback_record])
+        config = QueueManagerConfig(
+            name="QM1",
+            enabled=True,
+            poll_interval_seconds=60.0,
+            timeout_seconds=10.0,
+            connection=ConnectionConfig(
+                queue_manager="QM1",
+                channel="DEV.APP.SVRCONN",
+                conn_name="qm1(1414)",
+            ),
+            metrics=MetricsConfig(
+                include_system_topic_stream=True,
+                amqsruac_mode="fallback",
+                amqsruac_fallback_interval_seconds=300.0,
+            ),
+        )
+
+        first = collector._collect_cached_amqsruac_fallback(config, {"CPU"})
+        second = collector._collect_cached_amqsruac_fallback(config, {"CPU"})
+
+        self.assertEqual(first, [fallback_record])
+        self.assertEqual(second, [fallback_record])
+        collector._collect_amqsruac_resource_metrics.assert_called_once_with(
+            config,
+            monitor_classes={"CPU"},
         )
 
 

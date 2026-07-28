@@ -1,6 +1,6 @@
 name: QM1
 enabled: true
-poll_interval: 15s
+poll_interval: 60s
 timeout: 10s
 
 connection:
@@ -34,5 +34,7 @@ metrics:
   system_topic_diagnostics: true
   system_topic_startup_probe_window_seconds: 15
   system_topic_startup_probe_interval_seconds: 5
+  amqsruac_mode: fallback
+  amqsruac_fallback_interval_seconds: 300
   channel_patterns:
     - DEV.*
