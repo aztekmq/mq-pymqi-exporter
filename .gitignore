@@ -11,3 +11,5 @@ docker_build/grafana/
 docker_build/prometheus/
 docker_build/docker-compose.grafana.yml
 docker_build/docker-compose.prometheus.yml
+src/mq_exporter/exporter/__pycache__/
+src/mq_requestreply/__pycache__/
